@@ -86,19 +86,16 @@ impl CodeGraph {
         if let Some(entity_ids) = self.file_to_entities.remove(file_path) {
             for id in entity_ids {
                 if let Some(idx) = self.id_to_index.remove(&id) {
-                    self.graph.remove_node(idx);
+                    if let Some(_removed) = self.graph.remove_node(idx) {
+                        // In petgraph::graph::Graph, remove_node uses swap_remove:
+                        // The last node was swapped into `idx` (unless `idx` was the last node).
+                        if idx.index() < self.graph.node_count() {
+                            let swapped_id = self.graph[idx].id.clone();
+                            self.id_to_index.insert(swapped_id, idx);
+                        }
+                    }
                 }
             }
-            // Rebuild id_to_index mapping after node removals, as petgraph compacts indices
-            self.rebuild_index_cache();
-        }
-    }
-
-    fn rebuild_index_cache(&mut self) {
-        self.id_to_index.clear();
-        for idx in self.graph.node_indices() {
-            let entity = &self.graph[idx];
-            self.id_to_index.insert(entity.id.clone(), idx);
         }
     }
 

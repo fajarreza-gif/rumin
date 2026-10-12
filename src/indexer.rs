@@ -1568,6 +1568,13 @@ impl Indexer {
                 Err(_) => continue,
             };
 
+            let mtime_secs = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
             let mtime_nanos = metadata
                 .modified()
                 .ok()
@@ -1576,9 +1583,16 @@ impl Indexer {
                 .unwrap_or(0);
 
             // Fast-path: if not forced and mtime matches manifest, skip file read & hash
+            // Supports both legacy second-precision manifests (old_mtime <= 100_000_000_000) and nanosecond manifests
             if !force {
                 if let Some((old_mtime, _old_hash)) = manifest.files.get(&rel_path) {
-                    if *old_mtime == mtime_nanos {
+                    let matches_mtime = if *old_mtime > 100_000_000_000 {
+                        *old_mtime == mtime_nanos
+                    } else {
+                        *old_mtime == mtime_secs
+                    };
+
+                    if matches_mtime {
                         stats.unchanged += 1;
                         continue;
                     }
@@ -1597,7 +1611,13 @@ impl Indexer {
             };
 
             if let Some((old_mtime, old_hash)) = manifest.files.get(&rel_path) {
-                if !force && *old_mtime == mtime_nanos && *old_hash == hash {
+                let matches_mtime = if *old_mtime > 100_000_000_000 {
+                    *old_mtime == mtime_nanos
+                } else {
+                    *old_mtime == mtime_secs
+                };
+
+                if !force && matches_mtime && *old_hash == hash {
                     stats.unchanged += 1;
                     continue;
                 }
