@@ -51,6 +51,9 @@ enum Commands {
     /// Index the codebase and print topological summary statistics
     Index,
 
+    /// Return topological architectural digest and scale metrics of the codebase
+    Digest,
+
     /// Incrementally synchronize changed and deleted files
     Sync {
         /// Force complete re-check of files
@@ -320,6 +323,13 @@ async fn main() -> anyhow::Result<()> {
             println!("   - Functions/Methods: {}", stats.get("functions").unwrap_or(&0));
             println!("   - SQL Tables: {}", stats.get("sql_tables").unwrap_or(&0));
             println!("   - Make Targets: {}", stats.get("make_targets").unwrap_or(&0));
+            Ok(())
+        }
+
+        Some(Commands::Digest) => {
+            let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
+            let stats = graph.summary_stats();
+            println!("{}", serde_json::to_string_pretty(&stats)?);
             Ok(())
         }
 
