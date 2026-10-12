@@ -1,9 +1,13 @@
-use crate::types::{CodeEntity, EdgeKind, EntityType};
+pub use crate::types::{CodeEntity, EdgeKind, EntityType};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::Path;
 
 #[allow(dead_code)]
@@ -218,17 +222,51 @@ impl CodeGraph {
         Ok(Self::from_serializable(serializable))
     }
 
-    /// Save graph as high-speed compact binary checkpoint.
+    pub const CHECKPOINT_MAGIC: &'static [u8; 5] = b"RUMN\x01";
+
+    /// Save graph as high-speed compact binary compressed checkpoint.
     pub fn save_binary_checkpoint(&self, path: &Path) -> anyhow::Result<()> {
         let serializable = self.to_serializable();
-        let bytes = serde_json::to_vec(&serializable)?;
-        std::fs::write(path, bytes)?;
+        let file = std::fs::File::create(path)?;
+        let mut encoder = GzEncoder::new(file, Compression::fast());
+        encoder.write_all(Self::CHECKPOINT_MAGIC)?;
+        bincode::serialize_into(&mut encoder, &serializable)?;
+        encoder.finish()?;
         Ok(())
     }
 
-    /// Load graph from high-speed binary checkpoint.
+    /// Load graph from high-speed binary checkpoint, with automatic fallback for legacy formats.
     pub fn load_binary_checkpoint(path: &Path) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)?;
+        if bytes.is_empty() {
+            anyhow::bail!("Checkpoint file is empty");
+        }
+
+        // 1. Try gzip decompressing first
+        if bytes.starts_with(&[0x1f, 0x8b]) {
+            let mut decoder = GzDecoder::new(&bytes[..]);
+            let mut decompressed = Vec::new();
+            if decoder.read_to_end(&mut decompressed).is_ok() {
+                if decompressed.starts_with(Self::CHECKPOINT_MAGIC) {
+                    let serializable: SerializableGraph = bincode::deserialize(&decompressed[5..])?;
+                    return Ok(Self::from_serializable(serializable));
+                }
+                if let Ok(serializable) = bincode::deserialize::<SerializableGraph>(&decompressed) {
+                    return Ok(Self::from_serializable(serializable));
+                }
+                if let Ok(serializable) = serde_json::from_slice::<SerializableGraph>(&decompressed) {
+                    return Ok(Self::from_serializable(serializable));
+                }
+            }
+        }
+
+        // 2. Uncompressed bincode with magic header
+        if bytes.starts_with(Self::CHECKPOINT_MAGIC) {
+            let serializable: SerializableGraph = bincode::deserialize(&bytes[5..])?;
+            return Ok(Self::from_serializable(serializable));
+        }
+
+        // 3. Legacy uncompressed JSON fallback
         let serializable: SerializableGraph = serde_json::from_slice(&bytes)?;
         Ok(Self::from_serializable(serializable))
     }

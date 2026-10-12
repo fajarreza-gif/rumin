@@ -8,6 +8,7 @@ pub mod hippocampal;
 pub mod hook;
 pub mod indexer;
 pub mod mcp;
+pub mod parsers;
 pub mod session;
 pub mod sidecar;
 pub mod trace;

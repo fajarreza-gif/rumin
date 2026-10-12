@@ -52,6 +52,15 @@ fn test_binary_checkpoint_roundtrip() {
     assert_eq!(auth_ent.name, "authenticate");
     assert_eq!(auth_ent.signature.as_deref(), Some("pub fn authenticate(token: &str) -> bool"));
 
+    // Verify backward compatibility with legacy uncompressed JSON checkpoints
+    let legacy_json_path = temp_dir.join("legacy.json");
+    let serializable = graph.to_serializable();
+    let legacy_json = serde_json::to_vec(&serializable).unwrap();
+    fs::write(&legacy_json_path, legacy_json).unwrap();
+    let loaded_legacy = CodeGraph::load_binary_checkpoint(&legacy_json_path).unwrap();
+    assert_eq!(loaded_legacy.node_count(), 2);
+    assert_eq!(loaded_legacy.edge_count(), 1);
+
     let _ = fs::remove_dir_all(&temp_dir);
 }
 

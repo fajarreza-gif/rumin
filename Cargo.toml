@@ -22,3 +22,6 @@ notify = "6.1"
 sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1.8", features = ["v4"] }
+arc-swap = "1.7"
+flate2 = "1.0"
+tokio-util = "0.7"

@@ -10,6 +10,7 @@ use crate::trace::TraceIngestor;
 use crate::types::ContextBudget;
 use crate::watcher::FileWatcher;
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use petgraph::Direction;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -17,17 +18,17 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Notify, RwLock};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 pub struct MCPServer {
-    repo_root: PathBuf,
-    graph: Arc<RwLock<CodeGraph>>,
+    repo_root: Arc<RwLock<PathBuf>>,
+    graph: Arc<ArcSwap<CodeGraph>>,
     engine: Arc<HippocampalEngine>,
     sidecar: Arc<SidecarClient>,
-    db: Arc<MemoryDb>,
-    episodic: Arc<EpisodicEngine>,
-    session: Arc<SessionManager>,
-    trace: Arc<TraceIngestor>,
+    db: Arc<RwLock<Arc<MemoryDb>>>,
+    episodic: Arc<RwLock<Arc<EpisodicEngine>>>,
+    session: Arc<RwLock<Arc<SessionManager>>>,
+    trace: Arc<RwLock<Arc<TraceIngestor>>>,
     ready: Arc<Notify>,
     is_ready: Arc<AtomicBool>,
 }
@@ -40,40 +41,50 @@ impl MCPServer {
         let trace = Arc::new(TraceIngestor::new(db.clone()));
 
         Self {
-            repo_root: repo_root.clone(),
-            graph: Arc::new(RwLock::new(CodeGraph::new())),
+            repo_root: Arc::new(RwLock::new(repo_root)),
+            graph: Arc::new(ArcSwap::new(Arc::new(CodeGraph::new()))),
             engine: Arc::new(HippocampalEngine::default()),
             sidecar: Arc::new(SidecarClient::new(sidecar_path)),
-            db,
-            episodic,
-            session,
-            trace,
+            db: Arc::new(RwLock::new(db)),
+            episodic: Arc::new(RwLock::new(episodic)),
+            session: Arc::new(RwLock::new(session)),
+            trace: Arc::new(RwLock::new(trace)),
             ready: Arc::new(Notify::new()),
             is_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub fn db(&self) -> &Arc<MemoryDb> {
-        &self.db
+    pub async fn db(&self) -> Arc<MemoryDb> {
+        self.db.read().await.clone()
     }
 
-    pub fn episodic(&self) -> &Arc<EpisodicEngine> {
-        &self.episodic
+    pub async fn episodic(&self) -> Arc<EpisodicEngine> {
+        self.episodic.read().await.clone()
     }
 
-    pub fn session(&self) -> &Arc<SessionManager> {
-        &self.session
+    pub async fn session(&self) -> Arc<SessionManager> {
+        self.session.read().await.clone()
     }
 
-    pub fn trace(&self) -> &Arc<TraceIngestor> {
-        &self.trace
+    pub async fn trace(&self) -> Arc<TraceIngestor> {
+        self.trace.read().await.clone()
     }
 
-    pub fn graph(&self) -> &Arc<RwLock<CodeGraph>> {
+    pub fn graph(&self) -> Arc<CodeGraph> {
+        self.graph.load_full()
+    }
+
+    pub fn graph_swap(&self) -> &Arc<ArcSwap<CodeGraph>> {
         &self.graph
     }
 
+    pub fn mark_ready(&self) {
+        self.is_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.ready.notify_waiters();
+    }
+
     pub async fn handle_request_for_test(&self, req: Value) -> Option<Value> {
+        self.mark_ready();
         self.handle_request(req).await
     }
 
@@ -89,33 +100,41 @@ impl MCPServer {
         let is_ready_clone = self.is_ready.clone();
 
         tokio::spawn(async move {
-            let default_cp = repo_root_clone.join(".rumin/checkpoints/default.bin");
+            let repo_root = repo_root_clone.read().await.clone();
+            let default_cp = repo_root.join(".rumin/checkpoints/default.bin");
             let mut loaded_from_cp = false;
-            if default_cp.exists() {
+            let mut g = if default_cp.exists() {
                 if let Ok(loaded) = CodeGraph::load_binary_checkpoint(&default_cp) {
-                    let mut g = graph_clone.write().await;
-                    *g = loaded;
-                    let _ = episodic_clone.bind_episodes_to_graph(&mut g);
+                    info!("Hydrated graph from checkpoint {:?} ({} nodes)", default_cp, loaded.node_count());
                     loaded_from_cp = true;
-                    info!("Hydrated graph from checkpoint {:?} ({} nodes)", default_cp, g.node_count());
+                    loaded
+                } else {
+                    CodeGraph::new()
                 }
-            }
+            } else {
+                CodeGraph::new()
+            };
 
-            // Perform fast incremental sync
-            let mut g = graph_clone.write().await;
-            let indexer = Indexer::new(&repo_root_clone);
+            let ep = episodic_clone.read().await.clone();
+            let _ = ep.bind_episodes_to_graph(&mut g);
+
+            // Fast incremental sync
+            let indexer = Indexer::new(&repo_root);
             if let Ok(stats) = indexer.sync_repository(&mut g, &sidecar_clone, false).await {
                 if !loaded_from_cp || stats.added > 0 || stats.modified > 0 || stats.deleted > 0 {
-                    let _ = episodic_clone.bind_episodes_to_graph(&mut g);
+                    let _ = ep.bind_episodes_to_graph(&mut g);
                     let _ = g.save_binary_checkpoint(&default_cp);
                 }
             }
+
+            graph_clone.store(Arc::new(g));
             is_ready_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             ready_clone.notify_waiters();
         });
 
         // Start background FileWatcher so graph remains in sync across file modifications
-        let watcher = FileWatcher::new(&self.repo_root, self.graph.clone(), self.sidecar.clone());
+        let cur_repo = self.repo_root.read().await.clone();
+        let watcher = FileWatcher::new(cur_repo, self.graph.clone(), self.sidecar.clone());
         let _watcher_guard = watcher.start().ok();
         if _watcher_guard.is_some() {
             info!("Live FileWatcher started in background for MCP server.");
@@ -130,30 +149,18 @@ impl MCPServer {
                 continue;
             }
 
-            let request: Value = match serde_json::from_str(&line) {
-                Ok(val) => val,
-                Err(err) => {
-                    error!("Invalid JSON received: {}", err);
-                    let err_response = json!({
-                        "jsonrpc": "2.0",
-                        "id": null,
-                        "error": {
-                            "code": -32700,
-                            "message": "Parse error"
-                        }
-                    });
-                    let mut out = serde_json::to_string(&err_response)?;
-                    out.push('\n');
-                    stdout.write_all(out.as_bytes()).await?;
-                    stdout.flush().await?;
+            let req: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Malformed JSON input: {}", e);
                     continue;
                 }
             };
 
-            if let Some(response) = self.handle_request(request).await {
-                let mut out = serde_json::to_string(&response)?;
-                out.push('\n');
-                stdout.write_all(out.as_bytes()).await?;
+            if let Some(resp) = self.handle_request(req).await {
+                let serialized = serde_json::to_string(&resp)?;
+                stdout.write_all(serialized.as_bytes()).await?;
+                stdout.write_all(b"\n").await?;
                 stdout.flush().await?;
             }
         }
@@ -162,18 +169,12 @@ impl MCPServer {
     }
 
     async fn handle_request(&self, req: Value) -> Option<Value> {
-        let req_id = match req.get("id") {
-            Some(Value::Null) | None => None,
-            Some(val) => Some(val.clone()),
+        let req_id = req.get("id").cloned();
+        let method = match req.get("method").and_then(|m| m.as_str()) {
+            Some(m) => m,
+            None => return None,
         };
-        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or(json!({}));
-
-        // In JSON-RPC 2.0, notifications (no ID) MUST NOT receive a response
-        if req_id.is_none() {
-            debug!("Received notification: {}", method);
-            return None;
-        }
 
         match method {
             "initialize" => Some(json!({
@@ -182,11 +183,13 @@ impl MCPServer {
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {
-                        "tools": {}
+                        "tools": {
+                            "listChanged": false
+                        }
                     },
                     "serverInfo": {
                         "name": "ai-rumin",
-                        "version": "0.1.0"
+                        "version": env!("CARGO_PKG_VERSION")
                     }
                 }
             })),
@@ -399,6 +402,17 @@ impl MCPServer {
                                 },
                                 "required": ["trace_path"]
                             }
+                        },
+                        {
+                            "name": "rumin_switch_repo",
+                            "description": "Dynamically switch active repository root, re-initializing memory database, checkpoints, and graph.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo_path": { "type": "string", "description": "Absolute path to target repository directory" }
+                                },
+                                "required": ["repo_path"]
+                            }
                         }
                     ]
                 }
@@ -426,14 +440,20 @@ impl MCPServer {
                 }))
             }
 
-            _ => Some(json!({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {
-                    "code": -32601,
-                    "message": format!("Method not found: {}", method)
+            _ => {
+                if req_id.is_none() {
+                    None
+                } else {
+                    Some(json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32601,
+                            "message": format!("Method '{}' not found", method)
+                        }
+                    }))
                 }
-            })),
+            }
         }
     }
 
@@ -442,10 +462,7 @@ impl MCPServer {
             "rumin_query" => {
                 let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
                 let budget_tokens = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(1500) as usize;
-                let expand_bodies = args.get("expand_bodies")
-                    .or_else(|| args.get("include_code_slices"))
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(false);
+                let expand_bodies = args.get("expand_bodies").and_then(|e| e.as_bool()).unwrap_or(false);
 
                 let budget = ContextBudget {
                     total_token_limit: budget_tokens,
@@ -454,24 +471,28 @@ impl MCPServer {
                     expand_bodies,
                 };
 
-                let graph_guard = self.graph.read().await;
-                let res = self.engine.query(&graph_guard, query, &budget);
+                let graph_snapshot = self.graph.load();
+                let res = self.engine.query(&graph_snapshot, query, &budget);
                 res.formatted_context
             }
 
             "rumin_digest" => {
-                let graph_guard = self.graph.read().await;
-                let stats = graph_guard.summary_stats();
+                let graph_snapshot = self.graph.load();
+                let stats = graph_snapshot.summary_stats();
                 serde_json::to_string_pretty(&stats).unwrap_or_else(|_| "{}".to_string())
             }
 
             "rumin_index" => {
-                let mut graph_guard = self.graph.write().await;
-                let indexer = Indexer::new(&self.repo_root);
-                match indexer.index_repository(&mut graph_guard, &self.sidecar).await {
+                let repo_root = self.repo_root.read().await.clone();
+                let mut new_graph = (*self.graph.load_full()).clone();
+                let indexer = Indexer::new(&repo_root);
+                match indexer.index_repository(&mut new_graph, &self.sidecar).await {
                     Ok(count) => {
-                        let _ = self.episodic.bind_episodes_to_graph(&mut graph_guard);
-                        format!("Successfully re-indexed {} files. Graph now has {} nodes.", count, graph_guard.node_count())
+                        let ep = self.episodic.read().await.clone();
+                        let _ = ep.bind_episodes_to_graph(&mut new_graph);
+                        let node_count = new_graph.node_count();
+                        self.graph.store(Arc::new(new_graph));
+                        format!("Successfully re-indexed {} files. Graph now has {} nodes.", count, node_count)
                     }
                     Err(e) => format!("Error during indexing: {}", e),
                 }
@@ -483,24 +504,25 @@ impl MCPServer {
                 let max_depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(1).clamp(1, 5) as usize;
                 let direction = if dir_str == "in" || dir_str == "callers" { Direction::Incoming } else { Direction::Outgoing };
 
-                let graph_guard = self.graph.read().await;
+                let graph_snapshot = self.graph.load();
 
                 use std::collections::{HashSet, VecDeque};
                 let mut visited = HashSet::new();
                 let mut queue = VecDeque::new();
-                visited.insert(symbol_id.to_string());
                 queue.push_back((symbol_id.to_string(), 0usize));
+                visited.insert(symbol_id.to_string());
 
-                let mut lines = vec![format!("Lineage traversal for symbol: {} ({:?}, max depth: {})", symbol_id, direction, max_depth)];
+                let mut lines = Vec::new();
+                lines.push(format!("Traversal ({} hops, {:?}) from '{}':", max_depth, direction, symbol_id));
 
                 while let Some((curr_id, depth)) = queue.pop_front() {
                     if depth >= max_depth {
                         continue;
                     }
-                    let neighbors = graph_guard.neighbors(&curr_id, direction);
-                    for (neighbor, edge) in neighbors {
+
+                    for (neighbor, edge_kind) in graph_snapshot.neighbors(&curr_id, direction) {
                         let indent = "  ".repeat(depth + 1);
-                        lines.push(format!("{}- [{:?}] {} ({}:{}) [hop {}]", indent, edge, neighbor.id, neighbor.file_path, neighbor.line_start, depth + 1));
+                        lines.push(format!("{}- [{:?}] {} ({:?})", indent, edge_kind, neighbor.id, neighbor.entity_type));
                         if visited.insert(neighbor.id.clone()) {
                             queue.push_back((neighbor.id.clone(), depth + 1));
                         }
@@ -514,12 +536,15 @@ impl MCPServer {
             }
 
             "rumin_sync" => {
+                let repo_root = self.repo_root.read().await.clone();
                 let force = args.get("force").and_then(|f| f.as_bool()).unwrap_or(false);
-                let mut graph_guard = self.graph.write().await;
-                let indexer = Indexer::new(&self.repo_root);
-                match indexer.sync_repository(&mut graph_guard, &self.sidecar, force).await {
+                let mut new_graph = (*self.graph.load_full()).clone();
+                let indexer = Indexer::new(&repo_root);
+                match indexer.sync_repository(&mut new_graph, &self.sidecar, force).await {
                     Ok(stats) => {
-                        let _ = self.episodic.bind_episodes_to_graph(&mut graph_guard);
+                        let ep = self.episodic.read().await.clone();
+                        let _ = ep.bind_episodes_to_graph(&mut new_graph);
+                        self.graph.store(Arc::new(new_graph));
                         serde_json::to_string_pretty(&stats).unwrap_or_else(|_| "{}".to_string())
                     }
                     Err(e) => format!("Error during sync: {}", e),
@@ -528,7 +553,8 @@ impl MCPServer {
 
             "rumin_checkpoint" => {
                 let action = args.get("action").and_then(|a| a.as_str()).unwrap_or("save");
-                let default_path = self.repo_root.join(".rumin/checkpoints/default.bin");
+                let repo_root = self.repo_root.read().await.clone();
+                let default_path = repo_root.join(".rumin/checkpoints/default.bin");
                 let checkpoint_path = args.get("path")
                     .and_then(|p| p.as_str())
                     .map(PathBuf::from)
@@ -539,17 +565,16 @@ impl MCPServer {
                 }
 
                 if action == "save" {
-                    let graph_guard = self.graph.read().await;
-                    match graph_guard.save_binary_checkpoint(&checkpoint_path) {
+                    let graph_snapshot = self.graph.load();
+                    match graph_snapshot.save_binary_checkpoint(&checkpoint_path) {
                         Ok(_) => format!("Successfully exported binary checkpoint to {:?}", checkpoint_path),
                         Err(e) => format!("Error saving checkpoint: {}", e),
                     }
                 } else {
-                    let mut graph_guard = self.graph.write().await;
                     match CodeGraph::load_binary_checkpoint(&checkpoint_path) {
                         Ok(loaded) => {
                             let node_count = loaded.node_count();
-                            *graph_guard = loaded;
+                            self.graph.store(Arc::new(loaded));
                             format!("Successfully loaded binary checkpoint from {:?} ({} nodes)", checkpoint_path, node_count)
                         }
                         Err(e) => format!("Error loading checkpoint: {}", e),
@@ -558,7 +583,8 @@ impl MCPServer {
             }
 
             "rumin_diff" => {
-                let default_path = self.repo_root.join(".rumin/checkpoints/default.bin");
+                let repo_root = self.repo_root.read().await.clone();
+                let default_path = repo_root.join(".rumin/checkpoints/default.bin");
                 let checkpoint_path = args.get("checkpoint_path")
                     .and_then(|p| p.as_str())
                     .map(PathBuf::from)
@@ -566,8 +592,8 @@ impl MCPServer {
 
                 match CodeGraph::load_binary_checkpoint(&checkpoint_path) {
                     Ok(base_graph) => {
-                        let graph_guard = self.graph.read().await;
-                        let delta = base_graph.diff(&graph_guard);
+                        let graph_snapshot = self.graph.load();
+                        let delta = base_graph.diff(&graph_snapshot);
                         serde_json::to_string_pretty(&delta).unwrap_or_else(|_| "{}".to_string())
                     }
                     Err(e) => format!("Error reading checkpoint for diff: {}", e),
@@ -580,20 +606,20 @@ impl MCPServer {
                     .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                     .unwrap_or_default();
 
-                let graph_guard = self.graph.read().await;
-                let report = graph_guard.blast_radius(&symbols);
+                let graph_snapshot = self.graph.load();
+                let report = graph_snapshot.blast_radius(&symbols);
                 serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
             }
 
             "rumin_verify" => {
-                let graph_guard = self.graph.read().await;
-                let issues = graph_guard.verify();
+                let graph_snapshot = self.graph.load();
+                let issues = graph_snapshot.verify();
                 serde_json::to_string_pretty(&issues).unwrap_or_else(|_| "[]".to_string())
             }
 
             "rumin_audit" => {
-                let graph_guard = self.graph.read().await;
-                let violations = graph_guard.audit();
+                let graph_snapshot = self.graph.load();
+                let violations = graph_snapshot.audit();
                 serde_json::to_string_pretty(&violations).unwrap_or_else(|_| "[]".to_string())
             }
 
@@ -614,10 +640,12 @@ impl MCPServer {
                     .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                     .unwrap_or_default();
 
-                match self.episodic.record_episode(title, content, success, &bound_symbols, &bound_files, &tags) {
+                let ep_engine = self.episodic.read().await.clone();
+                match ep_engine.record_episode(title, content, success, &bound_symbols, &bound_files, &tags) {
                     Ok(ep) => {
-                        let mut graph_guard = self.graph.write().await;
-                        let _ = self.episodic.bind_episodes_to_graph(&mut graph_guard);
+                        let mut new_graph = (*self.graph.load_full()).clone();
+                        let _ = ep_engine.bind_episodes_to_graph(&mut new_graph);
+                        self.graph.store(Arc::new(new_graph));
                         format!("Successfully recorded episode '{}' (ID: {}).", ep.title, ep.id)
                     }
                     Err(e) => format!("Error recording episode: {}", e),
@@ -628,7 +656,8 @@ impl MCPServer {
                 let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
                 let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(10) as usize;
 
-                match self.episodic.search_episodes(query, limit) {
+                let ep_engine = self.episodic.read().await.clone();
+                match ep_engine.search_episodes(query, limit) {
                     Ok(episodes) => serde_json::to_string_pretty(&episodes).unwrap_or_else(|_| "[]".to_string()),
                     Err(e) => format!("Error searching episodes: {}", e),
                 }
@@ -638,14 +667,16 @@ impl MCPServer {
                 let name = args.get("name").and_then(|n| n.as_str()).unwrap_or("New Session");
                 let metadata = args.get("metadata").cloned();
 
-                match self.session.create_session(name, metadata) {
+                let sess_engine = self.session.read().await.clone();
+                match sess_engine.create_session(name, metadata) {
                     Ok(sess) => serde_json::to_string_pretty(&sess).unwrap_or_else(|_| "{}".to_string()),
                     Err(e) => format!("Error creating session: {}", e),
                 }
             }
 
             "rumin_session_list" => {
-                match self.session.list_sessions() {
+                let sess_engine = self.session.read().await.clone();
+                match sess_engine.list_sessions() {
                     Ok(sessions) => serde_json::to_string_pretty(&sessions).unwrap_or_else(|_| "[]".to_string()),
                     Err(e) => format!("Error listing sessions: {}", e),
                 }
@@ -653,9 +684,10 @@ impl MCPServer {
 
             "rumin_session_inspect" => {
                 let session_id = args.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
-                match self.session.get_session(session_id) {
+                let sess_engine = self.session.read().await.clone();
+                match sess_engine.get_session(session_id) {
                     Ok(Some(sess)) => {
-                        let notes = self.session.get_working_notes(session_id).unwrap_or_default();
+                        let notes = sess_engine.get_working_notes(session_id).unwrap_or_default();
                         let result = json!({
                             "session": sess,
                             "working_notes": notes
@@ -671,16 +703,20 @@ impl MCPServer {
                 let session_id = args.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
                 let content = args.get("content").and_then(|c| c.as_str()).unwrap_or("");
 
-                match self.session.add_working_note(session_id, content) {
+                let sess_engine = self.session.read().await.clone();
+                match sess_engine.add_working_note(session_id, content) {
                     Ok(note) => format!("Added note '{}' to session {}.", note.id, note.session_id),
                     Err(e) => format!("Error adding note: {}", e),
                 }
             }
 
             "rumin_consolidate" => {
-                let mut graph_guard = self.graph.write().await;
-                match MemoryConsolidator::consolidate(&mut graph_guard) {
-                    Ok(report) => serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string()),
+                let mut new_graph = (*self.graph.load_full()).clone();
+                match MemoryConsolidator::consolidate(&mut new_graph) {
+                    Ok(report) => {
+                        self.graph.store(Arc::new(new_graph));
+                        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+                    }
                     Err(e) => format!("Error consolidating memory: {}", e),
                 }
             }
@@ -690,9 +726,53 @@ impl MCPServer {
                 let session_id = args.get("session_id").and_then(|s| s.as_str());
                 let path = PathBuf::from(trace_path_str);
 
-                match self.trace.ingest_file(&path, session_id) {
+                let trace_engine = self.trace.read().await.clone();
+                match trace_engine.ingest_file(&path, session_id) {
                     Ok(report) => serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string()),
                     Err(e) => format!("Error ingesting trace: {}", e),
+                }
+            }
+
+            "rumin_switch_repo" => {
+                let repo_path_str = args.get("repo_path").and_then(|p| p.as_str()).unwrap_or("");
+                if repo_path_str.is_empty() {
+                    return "Error: repo_path argument is required".to_string();
+                }
+                let new_path = PathBuf::from(repo_path_str);
+                if !new_path.exists() || !new_path.is_dir() {
+                    return format!("Error: repository path {:?} does not exist or is not a directory", new_path);
+                }
+
+                match MemoryDb::open(&new_path) {
+                    Ok(new_db) => {
+                        let new_db_arc = Arc::new(new_db);
+                        let new_episodic = Arc::new(EpisodicEngine::new(new_db_arc.clone()));
+                        let new_session = Arc::new(SessionManager::new(new_db_arc.clone()));
+                        let new_trace = Arc::new(TraceIngestor::new(new_db_arc.clone()));
+
+                        let default_cp = new_path.join(".rumin/checkpoints/default.bin");
+                        let mut new_graph = if default_cp.exists() {
+                            CodeGraph::load_binary_checkpoint(&default_cp).unwrap_or_default()
+                        } else {
+                            CodeGraph::new()
+                        };
+                        let _ = new_episodic.bind_episodes_to_graph(&mut new_graph);
+
+                        *self.repo_root.write().await = new_path.clone();
+                        *self.db.write().await = new_db_arc;
+                        *self.episodic.write().await = new_episodic;
+                        *self.session.write().await = new_session;
+                        *self.trace.write().await = new_trace;
+                        self.graph.store(Arc::new(new_graph));
+
+                        let stats = self.graph.load().summary_stats();
+                        json!({
+                            "status": "switched",
+                            "repo_root": new_path.to_string_lossy(),
+                            "stats": stats
+                        }).to_string()
+                    }
+                    Err(e) => format!("Error initializing database for new repository: {}", e),
                 }
             }
 

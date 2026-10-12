@@ -1,17 +1,17 @@
 use crate::graph::CodeGraph;
 use crate::indexer::Indexer;
 use crate::sidecar::SidecarClient;
+use arc_swap::ArcSwap;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tracing::{error, info};
 
 pub struct FileWatcher {
     repo_root: PathBuf,
-    graph: Arc<RwLock<CodeGraph>>,
+    graph: Arc<ArcSwap<CodeGraph>>,
     sidecar: Arc<SidecarClient>,
     running: Arc<AtomicBool>,
 }
@@ -19,7 +19,7 @@ pub struct FileWatcher {
 impl FileWatcher {
     pub fn new(
         repo_root: impl Into<PathBuf>,
-        graph: Arc<RwLock<CodeGraph>>,
+        graph: Arc<ArcSwap<CodeGraph>>,
         sidecar: Arc<SidecarClient>,
     ) -> Self {
         Self {
@@ -60,10 +60,12 @@ impl FileWatcher {
                 }
 
                 if should_sync {
-                    info!("Change detected by watcher, performing incremental sync...");
-                    let mut g = graph.write().await;
+                    info!("Change detected by watcher, performing lock-free incremental sync...");
+                    let mut g = (*graph.load_full()).clone();
                     if let Err(e) = indexer.sync_repository(&mut g, &sidecar, false).await {
                         error!("Incremental sync failed: {:?}", e);
+                    } else {
+                        graph.store(Arc::new(g));
                     }
                 }
 
@@ -83,20 +85,10 @@ impl FileWatcher {
             EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
                 event.paths.iter().any(|p| {
                     !p.components().any(|c| {
-                        let s = c.as_os_str().to_str().unwrap_or("");
+                        let s = c.as_os_str().to_string_lossy();
                         matches!(
-                            s,
-                            ".git"
-                                | "target"
-                                | ".rumin"
-                                | "node_modules"
-                                | "__pycache__"
-                                | "venv"
-                                | ".venv"
-                                | "build"
-                                | "dist"
-                                | "out"
-                                | "vendor"
+                            s.as_ref(),
+                            ".git" | "target" | "node_modules" | ".rumin" | ".aimem" | "build" | "dist"
                         )
                     })
                 })

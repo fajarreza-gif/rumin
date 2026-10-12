@@ -16,7 +16,7 @@ use ai_rumin::watcher::FileWatcher;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use arc_swap::ArcSwap;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
@@ -397,20 +397,20 @@ async fn main() -> anyhow::Result<()> {
 
         Some(Commands::Watch) => {
             println!("👀 Starting real-time file watcher for {:?}", repo_root);
-            let graph = Arc::new(RwLock::new(CodeGraph::new()));
+            let mut initial_graph = CodeGraph::new();
             let sidecar = Arc::new(SidecarClient::new(&sidecar_script));
 
             {
-                let mut g = graph.write().await;
                 let indexer = Indexer::new(&repo_root);
-                indexer.index_repository(&mut g, &sidecar).await?;
+                indexer.index_repository(&mut initial_graph, &sidecar).await?;
                 if let Ok(db) = MemoryDb::open(&repo_root) {
                     let episodic = EpisodicEngine::new(Arc::new(db));
-                    let _ = episodic.bind_episodes_to_graph(&mut g);
+                    let _ = episodic.bind_episodes_to_graph(&mut initial_graph);
                 }
-                println!("✅ Initial index ready: {} nodes.", g.node_count());
+                println!("✅ Initial index ready: {} nodes.", initial_graph.node_count());
             }
 
+            let graph = Arc::new(ArcSwap::new(Arc::new(initial_graph)));
             let watcher = FileWatcher::new(&repo_root, graph.clone(), sidecar.clone());
             let _handle = watcher.start()?;
             println!("📡 Watching for file updates. Press Ctrl+C to terminate...");
