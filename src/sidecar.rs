@@ -1,6 +1,6 @@
 use crate::types::{CodeEntity, SidecarRequest, SidecarResponse};
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -9,11 +9,15 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::info;
 
+struct SidecarProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
 pub struct SidecarClient {
     worker_path: PathBuf,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
-    stdout: Arc<Mutex<Option<BufReader<ChildStdout>>>>,
-    child: Arc<Mutex<Option<Child>>>,
+    process: Arc<Mutex<Option<SidecarProcess>>>,
     request_counter: AtomicU64,
 }
 
@@ -22,46 +26,69 @@ impl SidecarClient {
     pub fn new(worker_path: impl Into<PathBuf>) -> Self {
         Self {
             worker_path: worker_path.into(),
-            stdin: Arc::new(Mutex::new(None)),
-            stdout: Arc::new(Mutex::new(None)),
-            child: Arc::new(Mutex::new(None)),
+            process: Arc::new(Mutex::new(None)),
             request_counter: AtomicU64::new(1),
         }
     }
 
-    /// Spawn or restart the Python worker subprocess.
-    pub async fn ensure_started(&self) -> Result<()> {
-        let mut child_guard = self.child.lock().await;
-        if child_guard.is_some() {
-            return Ok(());
+    fn spawn_process(worker_path: &Path) -> Result<SidecarProcess> {
+        if !worker_path.exists() {
+            return Err(anyhow!("Python worker script not found at {:?}", worker_path));
         }
 
-        if !self.worker_path.exists() {
-            return Err(anyhow!("Python worker script not found at {:?}", self.worker_path));
-        }
-
-        info!("Starting Python Semantic Sidecar worker at {:?}", self.worker_path);
+        info!("Starting Python Semantic Sidecar worker at {:?}", worker_path);
 
         let mut cmd = Command::new("python3");
-        cmd.arg(&self.worker_path)
+        cmd.arg(worker_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
 
         let mut child_proc = cmd.spawn()?;
         let stdin = child_proc.stdin.take().ok_or_else(|| anyhow!("Failed to open sidecar stdin"))?;
         let stdout = child_proc.stdout.take().ok_or_else(|| anyhow!("Failed to open sidecar stdout"))?;
 
-        *self.stdin.lock().await = Some(stdin);
-        *self.stdout.lock().await = Some(BufReader::new(stdout));
-        *child_guard = Some(child_proc);
+        Ok(SidecarProcess {
+            child: child_proc,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
+    }
 
+    /// Spawn or restart the Python worker subprocess.
+    pub async fn ensure_started(&self) -> Result<()> {
+        let mut proc_guard = self.process.lock().await;
+        if let Some(ref mut proc) = *proc_guard {
+            match proc.child.try_wait() {
+                Ok(None) => return Ok(()),
+                _ => {
+                    *proc_guard = None;
+                }
+            }
+        }
+
+        let new_proc = Self::spawn_process(&self.worker_path)?;
+        *proc_guard = Some(new_proc);
         Ok(())
     }
 
-    /// Send a JSON-RPC request to the Python sidecar worker.
+    /// Send a JSON-RPC request to the Python sidecar worker atomically under a single lock with timeout.
     async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        self.ensure_started().await?;
+        let mut proc_guard = self.process.lock().await;
+
+        let needs_spawn = match *proc_guard {
+            Some(ref mut proc) => match proc.child.try_wait() {
+                Ok(None) => false,
+                _ => true,
+            },
+            None => true,
+        };
+
+        if needs_spawn {
+            let new_proc = Self::spawn_process(&self.worker_path)?;
+            *proc_guard = Some(new_proc);
+        }
 
         let req_id = self.request_counter.fetch_add(1, Ordering::SeqCst);
         let request = SidecarRequest {
@@ -73,29 +100,38 @@ impl SidecarClient {
         let mut req_line = serde_json::to_string(&request)?;
         req_line.push('\n');
 
+        let proc = proc_guard.as_mut().unwrap();
+
         // Write to sidecar stdin
-        {
-            let mut stdin_guard = self.stdin.lock().await;
-            if let Some(stdin) = stdin_guard.as_mut() {
-                stdin.write_all(req_line.as_bytes()).await?;
-                stdin.flush().await?;
-            } else {
-                return Err(anyhow!("Sidecar stdin unavailable"));
-            }
+        if let Err(e) = proc.stdin.write_all(req_line.as_bytes()).await {
+            *proc_guard = None;
+            return Err(anyhow!("Failed to write to sidecar stdin: {}", e));
+        }
+        if let Err(e) = proc.stdin.flush().await {
+            *proc_guard = None;
+            return Err(anyhow!("Failed to flush sidecar stdin: {}", e));
         }
 
-        // Read from sidecar stdout
+        // Read from sidecar stdout with 10s timeout
         let mut response_line = String::new();
-        {
-            let mut stdout_guard = self.stdout.lock().await;
-            if let Some(stdout) = stdout_guard.as_mut() {
-                stdout.read_line(&mut response_line).await?;
-            } else {
-                return Err(anyhow!("Sidecar stdout unavailable"));
+        match tokio::time::timeout(std::time::Duration::from_secs(10), proc.stdout.read_line(&mut response_line)).await {
+            Ok(Ok(0)) => {
+                *proc_guard = None;
+                return Err(anyhow!("Sidecar worker closed stdout pipe (EOF)"));
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                *proc_guard = None;
+                return Err(anyhow!("Error reading sidecar stdout: {}", e));
+            }
+            Err(_) => {
+                *proc_guard = None;
+                return Err(anyhow!("Sidecar request timed out after 10s"));
             }
         }
 
         if response_line.trim().is_empty() {
+            *proc_guard = None;
             return Err(anyhow!("Empty response from sidecar"));
         }
 

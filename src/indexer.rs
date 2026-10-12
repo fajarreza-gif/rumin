@@ -1267,9 +1267,175 @@ impl Indexer {
         }
     }
 
+    /// Parse Rust source files into modules, structs, enums, traits, functions, methods, and impl blocks.
+    pub fn parse_rust(rel_path: &str, content: &str, graph: &mut CodeGraph) {
+        let mod_re = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([a-zA-Z0-9_]+)").unwrap();
+        let struct_re = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([a-zA-Z0-9_]+)").unwrap();
+        let enum_re = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?enum\s+([a-zA-Z0-9_]+)").unwrap();
+        let trait_re = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?trait\s+([a-zA-Z0-9_]+)").unwrap();
+        let fn_re = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern(?:\s+#[^#]+#)?\s+)?fn\s+([a-zA-Z0-9_]+)").unwrap();
+        let impl_re = Regex::new(r"^\s*impl(?:\s*<[^>]+>)?\s+(?:([a-zA-Z0-9_:]+)\s+for\s+)?([a-zA-Z0-9_:]+)").unwrap();
+        let use_re = Regex::new(r"^\s*(?:pub\s+)?use\s+([a-zA-Z0-9_:]+)").unwrap();
+
+        let mut current_impl: Option<String> = None;
+        let mut brace_depth = 0;
+        let mut impl_brace_depth = 0;
+
+        for (idx, line) in content.lines().enumerate() {
+            let line_num = idx + 1;
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(caps) = impl_re.captures(trimmed) {
+                let target = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                current_impl = Some(target.split("::").last().unwrap_or(target).to_string());
+                impl_brace_depth = brace_depth;
+
+                if let Some(trait_match) = caps.get(1) {
+                    let trait_name = trait_match.as_str();
+                    let struct_id = format!("{}::{}", rel_path, target);
+                    let trait_id = format!("{}::{}", rel_path, trait_name);
+                    graph.add_edge(&struct_id, &trait_id, EdgeKind::Implements);
+                }
+            }
+
+            if let Some(caps) = mod_re.captures(trimmed) {
+                let name = caps.get(1).unwrap().as_str();
+                let id = format!("{}::mod::{}", rel_path, name);
+                let mut entity = CodeEntity::new(&id, name, EntityType::Module, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+            } else if let Some(caps) = struct_re.captures(trimmed) {
+                let name = caps.get(1).unwrap().as_str();
+                let id = format!("{}::{}", rel_path, name);
+                let mut entity = CodeEntity::new(&id, name, EntityType::Struct, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+            } else if let Some(caps) = enum_re.captures(trimmed) {
+                let name = caps.get(1).unwrap().as_str();
+                let id = format!("{}::{}", rel_path, name);
+                let mut entity = CodeEntity::new(&id, name, EntityType::Class, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+            } else if let Some(caps) = trait_re.captures(trimmed) {
+                let name = caps.get(1).unwrap().as_str();
+                let id = format!("{}::{}", rel_path, name);
+                let mut entity = CodeEntity::new(&id, name, EntityType::Interface, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+            } else if let Some(caps) = fn_re.captures(trimmed) {
+                let name = caps.get(1).unwrap().as_str();
+                let (full_name, id, ent_type) = if let Some(ref impl_target) = current_impl {
+                    let full = format!("{}::{}", impl_target, name);
+                    let id = format!("{}::{}", rel_path, full);
+                    (full, id, EntityType::Method)
+                } else {
+                    let id = format!("{}::{}", rel_path, name);
+                    (name.to_string(), id, EntityType::Function)
+                };
+
+                let mut entity = CodeEntity::new(&id, &full_name, ent_type, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+
+                if let Some(ref impl_target) = current_impl {
+                    let struct_id = format!("{}::{}", rel_path, impl_target);
+                    graph.add_edge(&struct_id, &id, EdgeKind::Contains);
+                }
+            } else if let Some(caps) = use_re.captures(trimmed) {
+                let target = caps.get(1).unwrap().as_str();
+                let src_id = format!("{}::file", rel_path);
+                graph.add_edge(&src_id, target, EdgeKind::Imports);
+            }
+
+            let open = line.chars().filter(|&c| c == '{').count();
+            let close = line.chars().filter(|&c| c == '}').count();
+            brace_depth = (brace_depth + open).saturating_sub(close);
+            if current_impl.is_some() && brace_depth <= impl_brace_depth && close > 0 {
+                current_impl = None;
+            }
+        }
+    }
+
+    /// Parse Python source files into classes, functions, methods, and imports.
+    pub fn parse_python(rel_path: &str, content: &str, graph: &mut CodeGraph) {
+        let class_re = Regex::new(r"^\s*class\s+([a-zA-Z0-9_]+)(?:\(([^)]+)\))?\s*:").unwrap();
+        let func_re = Regex::new(r"^(\s*)(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(").unwrap();
+        let import_re = Regex::new(r"^\s*(?:from\s+([a-zA-Z0-9_\.]+)\s+import|import\s+([a-zA-Z0-9_\.]+))").unwrap();
+
+        let mut current_class: Option<(String, usize)> = None;
+
+        for (idx, line) in content.lines().enumerate() {
+            let line_num = idx + 1;
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.is_empty() {
+                continue;
+            }
+
+            let indent = line.len() - line.trim_start().len();
+            if let Some((_, class_indent)) = current_class {
+                if indent <= class_indent && !trimmed.starts_with('@') && !trimmed.is_empty() {
+                    current_class = None;
+                }
+            }
+
+            if let Some(caps) = class_re.captures(trimmed) {
+                let name = caps.get(1).unwrap().as_str();
+                let id = format!("{}::{}", rel_path, name);
+                let mut entity = CodeEntity::new(&id, name, EntityType::Class, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+                current_class = Some((name.to_string(), indent));
+
+                if let Some(bases) = caps.get(2) {
+                    for base in bases.as_str().split(',') {
+                        let base = base.trim();
+                        if !base.is_empty() {
+                            let base_id = format!("{}::{}", rel_path, base);
+                            graph.add_edge(&id, &base_id, EdgeKind::DependsOn);
+                        }
+                    }
+                }
+            } else if let Some(caps) = func_re.captures(line) {
+                let name = caps.get(2).unwrap().as_str();
+                let (full_name, id, ent_type) = if let Some((ref cls, _)) = current_class {
+                    let full = format!("{}.{}", cls, name);
+                    let id = format!("{}::{}", rel_path, full);
+                    (full, id, EntityType::Method)
+                } else {
+                    let id = format!("{}::{}", rel_path, name);
+                    (name.to_string(), id, EntityType::Function)
+                };
+
+                let mut entity = CodeEntity::new(&id, &full_name, ent_type, rel_path, line_num, line_num);
+                entity.signature = Some(trimmed.to_string());
+                graph.add_entity(entity);
+
+                if let Some((ref cls, _)) = current_class {
+                    let class_id = format!("{}::{}", rel_path, cls);
+                    graph.add_edge(&class_id, &id, EdgeKind::Contains);
+                }
+            } else if let Some(caps) = import_re.captures(trimmed) {
+                let mod_name = caps.get(1).or_else(|| caps.get(2)).unwrap().as_str();
+                let src_id = format!("{}::file", rel_path);
+                graph.add_edge(&src_id, mod_name, EdgeKind::Imports);
+            }
+        }
+    }
+
     /// Universal parser router for supported source code languages and markup formats.
     pub fn parse_generic_source(rel_path: &str, content: &str, lang: &str, graph: &mut CodeGraph) {
         match lang {
+            "rust" | "rs" => {
+                Self::parse_rust(rel_path, content, graph);
+                return;
+            }
+            "python" | "py" => {
+                Self::parse_python(rel_path, content, graph);
+                return;
+            }
             "typescript" | "javascript" | "ts" | "js" => {
                 Self::parse_typescript(rel_path, content, graph);
                 return;
@@ -1514,6 +1680,12 @@ impl Indexer {
         } else if matches!(extension, "html" | "htm") {
             Self::parse_html(&rel_path, &content, graph);
             Ok(true)
+        } else if matches!(extension, "rs") {
+            Self::parse_rust(&rel_path, &content, graph);
+            Ok(true)
+        } else if matches!(extension, "py") || shebang == Some("python") {
+            Self::parse_python(&rel_path, &content, graph);
+            Ok(true)
         } else {
             Ok(false)
         }
@@ -1547,7 +1719,7 @@ impl Indexer {
             let name = e.file_name().to_string_lossy();
             !matches!(
                 name.as_ref(),
-                ".git" | "target" | "node_modules" | "venv" | "__pycache__" | ".aimem" | ".cargo" | ".rumin"
+                ".git" | "target" | "node_modules" | "venv" | ".venv" | "__pycache__" | ".aimem" | ".cargo" | ".rumin" | "build" | "dist" | "out" | "vendor" | ".next" | "coverage" | ".pytest_cache" | ".mypy_cache" | ".tox" | "tmp" | ".tmp"
             )
         });
 
@@ -1557,16 +1729,21 @@ impl Indexer {
                 continue;
             }
 
+            let metadata = match std::fs::metadata(path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            // Skip giant files >10MB to avoid OOM
+            if metadata.len() > 10 * 1024 * 1024 {
+                continue;
+            }
+
             let rel_path = match path.strip_prefix(&self.repo_root) {
                 Ok(p) => p.to_string_lossy().to_string(),
                 Err(_) => path.to_string_lossy().to_string(),
             };
             seen_paths.insert(rel_path.clone());
-
-            let metadata = match std::fs::metadata(path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
 
             let mtime_secs = metadata
                 .modified()

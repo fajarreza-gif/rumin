@@ -116,6 +116,11 @@ fn test_blast_radius_hazard_report() {
     assert_eq!(report.high_risk.len(), 2); // api::handler and admin::handler (hop 1)
     assert_eq!(report.medium_risk.len(), 1); // gateway::router (hop 2)
     assert_eq!(report.low_risk.len(), 0);
+
+    // Verify file path expansion as hazard root
+    let file_report = graph.blast_radius(&["src/sec.rs".to_string()]);
+    assert_eq!(file_report.total_impacted, 3);
+    assert_eq!(file_report.high_risk.len(), 2);
 }
 
 #[test]

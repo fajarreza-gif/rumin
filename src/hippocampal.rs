@@ -177,14 +177,16 @@ impl HippocampalEngine {
             }
         }
 
-        // 4. Collect scores and sort descending
-        let mut scored: Vec<(String, f64)> = nodes
-            .iter()
-            .enumerate()
-            .map(|(pos, &node_idx)| (graph.graph[node_idx].id.clone(), p[pos]))
+        // 4. Collect top-scoring node indices, avoiding cloning strings for all N nodes
+        let mut indexed: Vec<(usize, f64)> = (0..n).map(|i| (i, p[i])).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let scored: Vec<(String, f64)> = indexed
+            .into_iter()
+            .take(100)
+            .map(|(pos, score)| (graph.graph[nodes[pos]].id.clone(), score))
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored
     }
 

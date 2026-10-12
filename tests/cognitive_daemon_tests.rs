@@ -190,3 +190,52 @@ fn test_circuit_breaker_hooks() {
     assert!(!cmd_fail.allowed);
     assert!(cmd_fail.reason.unwrap().contains("Forbidden hazardous"));
 }
+
+#[test]
+fn test_episodic_deletion_collision_resilience() {
+    let temp_dir = std::env::temp_dir().join(format!("rumin_test_ep_resil_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    let db = Arc::new(MemoryDb::open(&temp_dir).unwrap());
+    let engine = EpisodicEngine::new(db.clone());
+
+    let ep1 = engine.record_episode("Ep1", "First", true, &[], &[], &[]).unwrap();
+    let _ep2 = engine.record_episode("Ep2", "Second", true, &[], &[], &[]).unwrap();
+    let ep3 = engine.record_episode("Ep3", "Third", true, &[], &[], &[]).unwrap();
+
+    assert_eq!(ep1.id, "ep_1");
+    assert_eq!(ep3.id, "ep_3");
+
+    // Delete ep_2 from database
+    db.conn().execute("DELETE FROM episodes WHERE id = 'ep_2'", []).unwrap();
+
+    // In the past, COUNT(*) would be 2 and next insert would generate ep_3, colliding!
+    // Now it should generate ep_4 without collision.
+    let ep4 = engine.record_episode("Ep4", "Fourth", true, &[], &[], &[]).unwrap();
+    assert_eq!(ep4.id, "ep_4");
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_consolidation_preserves_legitimate_entities() {
+    let mut graph = CodeGraph::new();
+
+    // A legitimate function in src/service.rs
+    let leg_entity = CodeEntity::new("svc::process", "process", EntityType::Function, "src/service.rs", 1, 10);
+    // A temporary entity inside the same file
+    let temp_entity = CodeEntity::new("temp::macro_expand", "macro", EntityType::Function, "src/service.rs", 12, 15);
+
+    graph.add_entity(leg_entity);
+    graph.add_entity(temp_entity);
+
+    assert_eq!(graph.node_count(), 2);
+
+    let report = MemoryConsolidator::consolidate(&mut graph).unwrap();
+    assert_eq!(report.pruned_nodes, 1);
+
+    // Legitimate entity in src/service.rs MUST be preserved!
+    assert!(graph.get_entity("svc::process").is_some());
+    // Temporary entity must be pruned
+    assert!(graph.get_entity("temp::macro_expand").is_none());
+}

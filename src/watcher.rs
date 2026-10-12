@@ -78,16 +78,27 @@ impl FileWatcher {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    fn is_relevant_event(event: &Event, repo_root: &Path) -> bool {
+    fn is_relevant_event(event: &Event, _repo_root: &Path) -> bool {
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
                 event.paths.iter().any(|p| {
-                    let rel = p.strip_prefix(repo_root).unwrap_or(p).to_string_lossy();
-                    !rel.starts_with(".git")
-                        && !rel.starts_with("target")
-                        && !rel.starts_with(".rumin")
-                        && !rel.starts_with("node_modules")
-                        && !rel.starts_with("__pycache__")
+                    !p.components().any(|c| {
+                        let s = c.as_os_str().to_str().unwrap_or("");
+                        matches!(
+                            s,
+                            ".git"
+                                | "target"
+                                | ".rumin"
+                                | "node_modules"
+                                | "__pycache__"
+                                | "venv"
+                                | ".venv"
+                                | "build"
+                                | "dist"
+                                | "out"
+                                | "vendor"
+                        )
+                    })
                 })
             }
             _ => false,

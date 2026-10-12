@@ -38,8 +38,14 @@ impl EpisodicEngine {
         tags: &[String],
     ) -> Result<Episode> {
         let conn = self.db.conn();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0)).unwrap_or(0);
-        let id = format!("ep_{}", count + 1);
+        let max_id: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(CAST(SUBSTR(id, 4) AS INTEGER)), 0) FROM episodes WHERE id LIKE 'ep_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let id = format!("ep_{}", max_id + 1);
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()

@@ -21,8 +21,9 @@ impl MemoryConsolidator {
         let mut shortcut_edges_created = 0;
         let mut shortcuts_to_add: Vec<(String, String)> = Vec::new();
 
-        // 1. Identify high-confidence 2-hop transitive paths: A -> B -> C
-        for idx in graph.graph.node_indices() {
+        // 1. Identify high-confidence 2-hop transitive paths: A -> B -> C (capped at 100 to prevent memory explosion)
+        let max_shortcuts = 100;
+        'outer: for idx in graph.graph.node_indices() {
             let u_id = graph.graph[idx].id.clone();
             let out_neighbors = graph.neighbors(&u_id, Direction::Outgoing);
 
@@ -34,14 +35,17 @@ impl MemoryConsolidator {
                             && target_entity.id != u_id
                         {
                             shortcuts_to_add.push((u_id.clone(), target_entity.id.clone()));
+                            if shortcuts_to_add.len() >= max_shortcuts {
+                                break 'outer;
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Add shortcut edges with cap to prevent edge explosion
-        for (u, v) in shortcuts_to_add.into_iter().take(100) {
+        // Add shortcut edges
+        for (u, v) in shortcuts_to_add {
             if graph.add_edge(&u, &v, EdgeKind::References) {
                 shortcut_edges_created += 1;
             }
@@ -56,11 +60,10 @@ impl MemoryConsolidator {
             }
         }
 
-        let pruned_nodes = to_remove.len();
+        let mut pruned_nodes = 0;
         for id in to_remove {
-            let file = graph.get_entity(&id).map(|e| e.file_path.clone());
-            if let Some(f) = file {
-                graph.remove_file(&f);
+            if graph.remove_entity(&id) {
+                pruned_nodes += 1;
             }
         }
 

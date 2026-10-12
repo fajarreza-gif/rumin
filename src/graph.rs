@@ -50,10 +50,10 @@ impl CodeGraph {
             new_idx
         };
 
-        self.file_to_entities
-            .entry(file_path)
-            .or_default()
-            .push(id);
+        let file_entities = self.file_to_entities.entry(file_path).or_default();
+        if !file_entities.contains(&id) {
+            file_entities.push(id);
+        }
 
         idx
     }
@@ -79,6 +79,25 @@ impl CodeGraph {
     /// Retrieve node index by ID.
     pub fn get_index(&self, id: &str) -> Option<NodeIndex> {
         self.id_to_index.get(id).copied()
+    }
+
+    /// Remove an individual entity by its ID and clean up references.
+    pub fn remove_entity(&mut self, id: &str) -> bool {
+        if let Some(idx) = self.id_to_index.remove(id) {
+            let file_path = self.graph[idx].file_path.clone();
+            if let Some(_removed) = self.graph.remove_node(idx) {
+                if idx.index() < self.graph.node_count() {
+                    let swapped_id = self.graph[idx].id.clone();
+                    self.id_to_index.insert(swapped_id, idx);
+                }
+            }
+            if let Some(entities) = self.file_to_entities.get_mut(&file_path) {
+                entities.retain(|e_id| e_id != id);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove all entities associated with a specific file (used during incremental sync).
@@ -328,8 +347,16 @@ impl CodeGraph {
         let mut items: Vec<BlastRadiusItem> = Vec::new();
 
         for sym in target_symbols {
-            visited.insert(sym.clone());
-            queue.push_back((sym.clone(), 0));
+            if let Some(file_entities) = self.file_to_entities.get(sym) {
+                for ent_id in file_entities {
+                    if visited.insert(ent_id.clone()) {
+                        queue.push_back((ent_id.clone(), 0));
+                    }
+                }
+            } else {
+                visited.insert(sym.clone());
+                queue.push_back((sym.clone(), 0));
+            }
         }
 
         while let Some((curr_id, hops)) = queue.pop_front() {

@@ -334,8 +334,12 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Some(Commands::Sync { force }) => {
-            println!("🔄 Synchronizing repository at: {:?}", repo_root);
-            let mut graph = CodeGraph::new();
+            let default_cp = repo_root.join(".rumin/checkpoints/default.bin");
+            let mut graph = if !force && default_cp.exists() {
+                CodeGraph::load_binary_checkpoint(&default_cp).unwrap_or_else(|_| CodeGraph::new())
+            } else {
+                CodeGraph::new()
+            };
             let sidecar = SidecarClient::new(&sidecar_script);
             let indexer = Indexer::new(&repo_root);
 

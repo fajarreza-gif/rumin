@@ -36,6 +36,7 @@ impl TraceIngestor {
         let mut touched_files: HashSet<String> = HashSet::new();
 
         let conn = self.db.conn();
+        let _ = conn.execute_batch("BEGIN TRANSACTION;");
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -86,6 +87,8 @@ impl TraceIngestor {
 
             steps_ingested += 1;
         }
+
+        let _ = conn.execute_batch("COMMIT;");
 
         let duration_ms = start.elapsed().as_millis();
         Ok(TraceIngestionReport {
