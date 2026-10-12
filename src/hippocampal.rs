@@ -228,6 +228,19 @@ impl HippocampalEngine {
                 if let Some(doc) = &entity.docstring {
                     formatted_lines.push(format!("Doc: {}", doc));
                 }
+
+                if budget.expand_bodies {
+                    if let Ok(file_content) = std::fs::read_to_string(&entity.file_path) {
+                        let lines: Vec<&str> = file_content.lines().collect();
+                        if entity.line_start > 0 && entity.line_start <= lines.len() {
+                            let end_line = entity.line_end.min(lines.len()).min(entity.line_start + 25);
+                            let slice = lines[entity.line_start - 1..end_line].join("\n");
+                            formatted_lines.push("```".to_string());
+                            formatted_lines.push(slice);
+                            formatted_lines.push("```".to_string());
+                        }
+                    }
+                }
                 formatted_lines.push(String::new());
 
                 // Find 1-hop dependencies for explanatory causal paths

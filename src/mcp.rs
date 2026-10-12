@@ -8,6 +8,7 @@ use crate::session::SessionManager;
 use crate::sidecar::SidecarClient;
 use crate::trace::TraceIngestor;
 use crate::types::ContextBudget;
+use crate::watcher::FileWatcher;
 use anyhow::Result;
 use petgraph::Direction;
 use serde_json::{json, Value};
@@ -113,6 +114,13 @@ impl MCPServer {
             ready_clone.notify_waiters();
         });
 
+        // Start background FileWatcher so graph remains in sync across file modifications
+        let watcher = FileWatcher::new(&self.repo_root, self.graph.clone(), self.sidecar.clone());
+        let _watcher_guard = watcher.start().ok();
+        if _watcher_guard.is_some() {
+            info!("Live FileWatcher started in background for MCP server.");
+        }
+
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
         let mut reader = BufReader::new(stdin).lines();
@@ -203,7 +211,8 @@ impl MCPServer {
                                 "type": "object",
                                 "properties": {
                                     "query": { "type": "string", "description": "Natural language query or symbol name" },
-                                    "budget": { "type": "integer", "description": "Max context tokens (default: 1500)" }
+                                    "budget": { "type": "integer", "description": "Max context tokens (default: 1500)" },
+                                    "expand_bodies": { "type": "boolean", "description": "Include actual AST code snippet slices directly in response" }
                                 },
                                 "required": ["query"]
                             }
@@ -226,12 +235,13 @@ impl MCPServer {
                         },
                         {
                             "name": "rumin_traverse",
-                            "description": "Traverse incoming or outgoing dependencies for a specific symbol ID.",
+                            "description": "Traverse directional callers, callees, or implementations of a symbol.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
-                                    "symbol_id": { "type": "string", "description": "Qualified symbol ID" },
-                                    "direction": { "type": "string", "enum": ["in", "out"], "description": "Traversal direction" }
+                                    "symbol_id": { "type": "string", "description": "Qualified symbol ID or name" },
+                                    "direction": { "type": "string", "enum": ["in", "out", "callers", "callees"], "description": "Traversal direction" },
+                                    "depth": { "type": "integer", "description": "Traversal depth hops (1-5, default: 1)" }
                                 },
                                 "required": ["symbol_id"]
                             }
@@ -432,12 +442,16 @@ impl MCPServer {
             "rumin_query" => {
                 let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
                 let budget_tokens = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(1500) as usize;
+                let expand_bodies = args.get("expand_bodies")
+                    .or_else(|| args.get("include_code_slices"))
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false);
 
                 let budget = ContextBudget {
                     total_token_limit: budget_tokens,
-                    max_symbols: 12,
+                    max_symbols: if expand_bodies { 8 } else { 12 },
                     include_signatures: true,
-                    expand_bodies: false,
+                    expand_bodies,
                 };
 
                 let graph_guard = self.graph.read().await;
@@ -466,14 +480,35 @@ impl MCPServer {
             "rumin_traverse" => {
                 let symbol_id = args.get("symbol_id").and_then(|s| s.as_str()).unwrap_or("");
                 let dir_str = args.get("direction").and_then(|d| d.as_str()).unwrap_or("out");
-                let direction = if dir_str == "in" { Direction::Incoming } else { Direction::Outgoing };
+                let max_depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(1).clamp(1, 5) as usize;
+                let direction = if dir_str == "in" || dir_str == "callers" { Direction::Incoming } else { Direction::Outgoing };
 
                 let graph_guard = self.graph.read().await;
-                let neighbors = graph_guard.neighbors(symbol_id, direction);
 
-                let mut lines = vec![format!("Traversal for symbol: {} ({:?})", symbol_id, direction)];
-                for (neighbor, edge) in neighbors {
-                    lines.push(format!("  - [{:?}] {} ({}:{})", edge, neighbor.id, neighbor.file_path, neighbor.line_start));
+                use std::collections::{HashSet, VecDeque};
+                let mut visited = HashSet::new();
+                let mut queue = VecDeque::new();
+                visited.insert(symbol_id.to_string());
+                queue.push_back((symbol_id.to_string(), 0usize));
+
+                let mut lines = vec![format!("Lineage traversal for symbol: {} ({:?}, max depth: {})", symbol_id, direction, max_depth)];
+
+                while let Some((curr_id, depth)) = queue.pop_front() {
+                    if depth >= max_depth {
+                        continue;
+                    }
+                    let neighbors = graph_guard.neighbors(&curr_id, direction);
+                    for (neighbor, edge) in neighbors {
+                        let indent = "  ".repeat(depth + 1);
+                        lines.push(format!("{}- [{:?}] {} ({}:{}) [hop {}]", indent, edge, neighbor.id, neighbor.file_path, neighbor.line_start, depth + 1));
+                        if visited.insert(neighbor.id.clone()) {
+                            queue.push_back((neighbor.id.clone(), depth + 1));
+                        }
+                    }
+                }
+
+                if lines.len() == 1 {
+                    lines.push("  (no connected symbols found)".to_string());
                 }
                 lines.join("\n")
             }
