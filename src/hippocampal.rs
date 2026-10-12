@@ -73,9 +73,14 @@ impl HippocampalEngine {
                 if path_tokens.contains(token) {
                     match_score += 1.0;
                 }
+                if let Some(sig) = &entity.signature {
+                    if sig.to_lowercase().contains(token) {
+                        match_score += 1.5;
+                    }
+                }
                 if let Some(doc) = &entity.docstring {
                     if doc.to_lowercase().contains(token) {
-                        match_score += 0.5;
+                        match_score += 1.0;
                     }
                 }
             }
