@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<APIProxy revision="1" name="orders-api">
+    <DisplayName>Orders API Proxy</DisplayName>
+    <Description>Enterprise Orders Gateway</Description>
+    <Basepaths>
+        <BasePath>/v1/orders</BasePath>
+    </Basepaths>
+    <ProxyEndpoints>
+        <ProxyEndpoint>default</ProxyEndpoint>
+    </ProxyEndpoints>
+    <TargetEndpoints>
+        <TargetEndpoint>default</TargetEndpoint>
+    </TargetEndpoints>
+    <Policies>
+        <Policy>VerifyApiKey</Policy>
+        <Policy>RateLimit</Policy>
+        <Policy>FormatResponse</Policy>
+    </Policies>
+</APIProxy>

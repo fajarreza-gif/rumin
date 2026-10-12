@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+export function runCliTask() {
+    console.log("Running task via Node CLI...");
+}

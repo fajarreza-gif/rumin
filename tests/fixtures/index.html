@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI-Rumin Dashboard</title>
+</head>
+<body>
+    <header id="site-header">
+        <app-nav class="main-navigation"></app-nav>
+    </header>
+
+    <main id="app-container">
+        <form id="search-form" class="inline-form">
+            <input type="text" id="query-input" placeholder="Query associative memory..." />
+            <button type="submit">Search</button>
+        </form>
+
+        <section id="results-panel">
+            <template id="result-card">
+                <article class="card"></article>
+            </template>
+        </section>
+    </main>
+
+    <footer id="site-footer">
+        <p>&copy; 2026 AI-Rumin</p>
+    </footer>
+
+    <script id="main-bundle" src="/bundle.js"></script>
+</body>
+</html>

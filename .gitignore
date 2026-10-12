@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+Cargo.lock
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.sock
+.aiedit/
+.rumin/

@@ -1,0 +1,10 @@
+# ai-rumin ignore rules
+target/
+node_modules/
+.git/
+.rumin/
+dist/
+build/
+__pycache__/
+*.pyc
+*.lock

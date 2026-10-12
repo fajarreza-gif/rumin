@@ -1,0 +1,6 @@
+<aura:component controller="AccountService" implements="flexipage:availableForAllPageTypes">
+    <aura:attribute name="accounts" type="List" />
+    <lightning:card title="Account Portfolio">
+        <p class="slds-p-horizontal_small">Displaying active accounts.</p>
+    </lightning:card>
+</aura:component>

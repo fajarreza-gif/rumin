@@ -1,0 +1,15 @@
+pub mod bench;
+pub mod config;
+pub mod consolidate;
+pub mod db;
+pub mod episodic;
+pub mod graph;
+pub mod hippocampal;
+pub mod hook;
+pub mod indexer;
+pub mod mcp;
+pub mod session;
+pub mod sidecar;
+pub mod trace;
+pub mod types;
+pub mod watcher;
