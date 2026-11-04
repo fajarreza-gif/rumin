@@ -351,4 +351,26 @@ async fn test_empirical_salesforce_source_code_from_sf_b2b() {
 
         assert!(graph.get_entity("sobject::Account").is_some());
     }
+
+    // 5. Real Callable / invokeMethod dispatch between CPQBillingAccountPayload and CPQBillingBAMapperV2
+    let mapper_rel = "force-app/main/default/classes/CPQBillingBAMapperV2.cls";
+    let payload_rel = "force-app/main/default/classes/CPQBillingAccountPayload.cls";
+    let mapper_path = sf_root.join(mapper_rel);
+    let payload_path = sf_root.join(payload_rel);
+    if mapper_path.exists() && payload_path.exists() {
+        let mapper_content = std::fs::read_to_string(&mapper_path).unwrap();
+        let payload_content = std::fs::read_to_string(&payload_path).unwrap();
+
+        parse_apex_class(mapper_rel, &mapper_content, &mut graph);
+        parse_apex_class(payload_rel, &payload_content, &mut graph);
+
+        // Verify target method exists
+        assert!(graph.get_entity("apex::CPQBillingBAMapperV2.buildAccount").is_some());
+
+        // Verify caller edge connects dynamically across invokeMethod
+        assert!(
+            graph.has_edge("apex::CPQBillingAccountPayload.toTmfBody", "apex::CPQBillingBAMapperV2.buildAccount"),
+            "CPQBillingAccountPayload.toTmfBody must link to CPQBillingBAMapperV2.buildAccount via invokeMethod"
+        );
+    }
 }

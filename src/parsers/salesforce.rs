@@ -70,6 +70,71 @@ fn link_sobject_reference(
     }
 }
 
+/// Helper to link a dynamic or static Apex method invocation (e.g. Callable.invokeMethod) to active caller.
+fn link_apex_method_call(
+    graph: &mut CodeGraph,
+    rel_path: &str,
+    line_num: usize,
+    current_class: &Option<String>,
+    current_method: &Option<String>,
+    target_class: &str,
+    target_method: &str,
+) {
+    let target_cls_id = format!("apex::{}", target_class);
+    if graph.get_entity(&target_cls_id).is_none() {
+        let mut cls_ent = CodeEntity::new(&target_cls_id, target_class, EntityType::Class, rel_path, line_num, line_num);
+        cls_ent.signature = Some(format!("class {}", target_class));
+        graph.add_entity(cls_ent);
+    }
+
+    // Check if target method already exists with different casing (e.g. buildAccount vs BuildAccount)
+    let target_method_lower = target_method.to_lowercase();
+    let mut resolved_meth_id = format!("apex::{}.{}", target_class, target_method);
+
+    let prefix = format!("apex::{}.", target_class);
+    for key in graph.id_to_index.keys() {
+        if key.starts_with(&prefix) {
+            let existing_meth_name = &key[prefix.len()..];
+            if existing_meth_name.to_lowercase() == target_method_lower {
+                resolved_meth_id = key.clone();
+                break;
+            }
+        }
+    }
+
+    if graph.get_entity(&resolved_meth_id).is_none() {
+        let mut meth_ent = CodeEntity::new(
+            &resolved_meth_id,
+            &format!("{}.{}", target_class, target_method),
+            EntityType::Method,
+            rel_path,
+            line_num,
+            line_num,
+        );
+        meth_ent.signature = Some(format!("{}.{}()", target_class, target_method));
+        graph.add_entity(meth_ent);
+        graph.add_edge(&target_cls_id, &resolved_meth_id, EdgeKind::Contains);
+    }
+
+    if let (Some(cls), Some(meth)) = (current_class, current_method) {
+        let method_id = format!("{}::{}.{}", rel_path, cls, meth);
+        graph.add_edge(&method_id, &resolved_meth_id, EdgeKind::Calls);
+        graph.add_edge(&method_id, &target_cls_id, EdgeKind::Calls);
+
+        let apex_meth_id = format!("apex::{}.{}", cls, meth);
+        graph.add_edge(&apex_meth_id, &resolved_meth_id, EdgeKind::Calls);
+        graph.add_edge(&apex_meth_id, &target_cls_id, EdgeKind::Calls);
+    } else if let Some(cls) = current_class {
+        let class_id = format!("{}::{}", rel_path, cls);
+        graph.add_edge(&class_id, &resolved_meth_id, EdgeKind::Calls);
+        graph.add_edge(&class_id, &target_cls_id, EdgeKind::Calls);
+
+        let apex_cls_id = format!("apex::{}", cls);
+        graph.add_edge(&apex_cls_id, &resolved_meth_id, EdgeKind::Calls);
+        graph.add_edge(&apex_cls_id, &target_cls_id, EdgeKind::Calls);
+    }
+}
+
 /// Parse Salesforce Apex classes into classes, interfaces, enums, annotated methods, and embedded SOQL references.
 pub fn parse_apex_class(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let class_re = Regex::new(r"(?i)^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public|global|private)\s+(?:(?:with|without|inherited)\s+sharing\s+)?(?:virtual|abstract)?\s*class\s+([a-zA-Z0-9_]+)").unwrap();
@@ -90,15 +155,39 @@ pub fn parse_apex_class(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let db_query_re = Regex::new(r#"(?i)Database\.(?:query|getQueryLocator)\s*\(\s*([a-zA-Z0-9_]+)\s*\)"#).unwrap();
     let bre_matrix_re = Regex::new(r#"(?i)createCustomAction\s*\(\s*['"]runDecisionMatrix['"]\s*,\s*['"]([^'"]+)['"]"#).unwrap();
 
+    // Callable & VlocityOpenInterface dynamic dispatch detection
+    let inline_invoke_re = Regex::new(r#"(?i)new\s+([a-zA-Z0-9_]+)\s*\([^)]*\)\s*\.\s*(?:invokeMethod|call)\s*\(\s*['"]([a-zA-Z0-9_]+)['"]"#).unwrap();
+    let new_class_only_re = Regex::new(r#"(?i)\bnew\s+([a-zA-Z0-9_]+)\s*\([^)]*\)\s*$"#).unwrap();
+    let invoke_method_only_re = Regex::new(r#"(?i)^\s*\.\s*(?:invokeMethod|call)\s*\(\s*['"]([a-zA-Z0-9_]+)['"]"#).unwrap();
+    let var_new_re = Regex::new(r#"(?i)(?:([a-zA-Z0-9_]+)\s+)?([a-zA-Z0-9_]+)\s*=\s*new\s+([a-zA-Z0-9_]+)\s*\("#).unwrap();
+    let var_type_for_name_re = Regex::new(r#"(?i)([a-zA-Z0-9_]+)\s*=\s*(?:\([^)]+\)\s*)?Type\.forName\s*\(\s*['"]([a-zA-Z0-9_]+)['"]\s*\)"#).unwrap();
+    let var_invoke_re = Regex::new(r#"(?i)\b([a-zA-Z0-9_]+)\s*\.\s*(?:invokeMethod|call)\s*\(\s*(?:['"]([a-zA-Z0-9_]+)['"]|([a-zA-Z0-9_]+))"#).unwrap();
+    let type_for_name_re = Regex::new(r#"(?i)Type\.forName\s*\(\s*['"]([a-zA-Z0-9_]+)['"]\s*\)"#).unwrap();
+
     let is_test_class = content.contains("@isTest")
         || content.contains("@IsTest")
         || content.contains("testMethod")
         || rel_path.to_lowercase().contains("/test/")
         || rel_path.ends_with("Test.cls");
 
-    let mut current_class: Option<String> = None;
+    let file_stem = Path::new(rel_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim_end_matches(".cls"))
+        .unwrap_or("")
+        .to_string();
+
+    let mut brace_depth: usize = 0;
+    let mut class_stack: Vec<(String, usize)> = Vec::new();
+    let mut current_class: Option<String> = if !file_stem.is_empty() {
+        Some(file_stem.clone())
+    } else {
+        None
+    };
     let mut current_method: Option<String> = None;
     let mut local_vars: HashMap<String, String> = HashMap::new();
+    let mut local_class_vars: HashMap<String, String> = HashMap::new();
+    let mut pending_new_class: Option<String> = None;
 
     for (idx, line) in content.lines().enumerate() {
         let line_num = idx + 1;
@@ -109,6 +198,9 @@ pub fn parse_apex_class(rel_path: &str, content: &str, graph: &mut CodeGraph) {
 
         if let Some(caps) = class_re.captures(trimmed) {
             let name = caps.get(1).unwrap().as_str();
+            let open_braces = trimmed.chars().filter(|&c| c == '{').count();
+            let depth_at_open = brace_depth + open_braces;
+            class_stack.push((name.to_string(), depth_at_open));
             current_class = Some(name.to_string());
             current_method = None;
             let id = format!("{}::{}", rel_path, name);
@@ -266,6 +358,88 @@ pub fn parse_apex_class(rel_path: &str, content: &str, graph: &mut CodeGraph) {
                 link_sobject_reference(graph, rel_path, line_num, &current_class, &current_method, tok, None, false);
             }
         }
+
+        // 8. Dynamic Callable & VlocityOpenInterface method dispatch
+        if let Some(caps) = inline_invoke_re.captures(trimmed) {
+            let target_cls = caps.get(1).unwrap().as_str();
+            let target_meth = caps.get(2).unwrap().as_str();
+            link_apex_method_call(graph, rel_path, line_num, &current_class, &current_method, target_cls, target_meth);
+            pending_new_class = None;
+        } else if let Some(caps) = invoke_method_only_re.captures(trimmed) {
+            if let Some(ref target_cls) = pending_new_class {
+                let target_meth = caps.get(1).unwrap().as_str();
+                link_apex_method_call(graph, rel_path, line_num, &current_class, &current_method, target_cls, target_meth);
+            }
+            pending_new_class = None;
+        } else if let Some(caps) = var_invoke_re.captures(trimmed) {
+            let var_name = caps.get(1).unwrap().as_str();
+            let target_meth = caps.get(2).map(|m| m.as_str()).or_else(|| {
+                caps.get(3).and_then(|m| local_vars.get(m.as_str()).map(|s| s.as_str()))
+            });
+            if let (Some(target_meth), Some(target_cls)) = (target_meth, local_class_vars.get(var_name)) {
+                link_apex_method_call(graph, rel_path, line_num, &current_class, &current_method, target_cls, target_meth);
+            }
+            pending_new_class = None;
+        } else if let Some(caps) = new_class_only_re.captures(trimmed) {
+            if !trimmed.ends_with(';') {
+                pending_new_class = Some(caps.get(1).unwrap().as_str().to_string());
+            } else {
+                pending_new_class = None;
+            }
+        } else if trimmed.ends_with(';') {
+            pending_new_class = None;
+        }
+
+        // Track variable instantiation: priceHelper = new PricingPlanHelper();
+        if let Some(caps) = var_new_re.captures(trimmed) {
+            let var_name = caps.get(2).unwrap().as_str();
+            let cls_name = caps.get(3).unwrap().as_str();
+            local_class_vars.insert(var_name.to_string(), cls_name.to_string());
+        }
+
+        // Track Type.forName variable instantiation: mapper = Type.forName('CPQBillingBAMapperV2').newInstance();
+        if let Some(caps) = var_type_for_name_re.captures(trimmed) {
+            let var_name = caps.get(1).unwrap().as_str();
+            let cls_name = caps.get(2).unwrap().as_str();
+            local_class_vars.insert(var_name.to_string(), cls_name.to_string());
+        }
+
+        // Type.forName references: Type.forName('Foo')
+        for caps in type_for_name_re.captures_iter(trimmed) {
+            let cls_name = caps.get(1).unwrap().as_str();
+            let target_cls_id = format!("apex::{}", cls_name);
+            if graph.get_entity(&target_cls_id).is_none() {
+                let mut cls_ent = CodeEntity::new(&target_cls_id, cls_name, EntityType::Class, rel_path, line_num, line_num);
+                cls_ent.signature = Some(format!("class {}", cls_name));
+                graph.add_entity(cls_ent);
+            }
+            if let Some(ref cls) = current_class {
+                let caller_cls_id = format!("{}::{}", rel_path, cls);
+                graph.add_edge(&caller_cls_id, &target_cls_id, EdgeKind::References);
+                let apex_cls_id = format!("apex::{}", cls);
+                graph.add_edge(&apex_cls_id, &target_cls_id, EdgeKind::References);
+            }
+        }
+
+        // Track block scoping to restore outer class when inner DTO / class closes
+        let open_braces = trimmed.chars().filter(|&c| c == '{').count();
+        let close_braces = trimmed.chars().filter(|&c| c == '}').count();
+        brace_depth = (brace_depth + open_braces).saturating_sub(close_braces);
+
+        while let Some((_, depth)) = class_stack.last() {
+            if brace_depth < *depth {
+                class_stack.pop();
+            } else {
+                break;
+            }
+        }
+        current_class = class_stack.last().map(|(c, _)| c.clone()).or_else(|| {
+            if !file_stem.is_empty() {
+                Some(file_stem.clone())
+            } else {
+                None
+            }
+        });
     }
 }
 

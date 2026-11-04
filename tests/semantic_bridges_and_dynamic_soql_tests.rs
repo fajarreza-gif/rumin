@@ -235,3 +235,88 @@ public class SFA_AccountSyncHandler {
     // Cleanup
     let _ = fs::remove_dir_all(&temp_repo);
 }
+
+#[test]
+fn test_dynamic_callable_and_invoke_method_dispatch() {
+    let mut graph = CodeGraph::new();
+
+    // 1. Target class declaring methods: buildAccount and calculatePrice
+    let target_cls = r#"
+public class CPQBillingBAMapperV2 implements Callable {
+    public static BillingAccount buildAccount(Map<String, Object> input) {
+        return new BillingAccount();
+    }
+
+    public static void calculatePrice() {}
+}
+"#;
+    parse_apex_class(
+        "force-app/main/default/classes/CPQBillingBAMapperV2.cls",
+        target_cls,
+        &mut graph,
+    );
+
+    // Verify target method exists
+    assert!(graph.get_entity("apex::CPQBillingBAMapperV2.buildAccount").is_some());
+
+    // 2. Caller class using dynamic Callable & invokeMethod patterns
+    let caller_cls = r#"
+public class CPQBillingAccountPayload {
+    public static Map<String, Object> toTmfBody(Map<String, Object> inputMap) {
+        // Multi-line chained invocation with uppercase 'BuildAccount' (case-insensitive resolution)
+        new CPQBillingBAMapperV2()
+            .invokeMethod('BuildAccount', inputMap, outputMap, null);
+
+        // Same-line invocation
+        new CPQBillingBAMapperV2().invokeMethod('calculatePrice', inputMap, outputMap, null);
+
+        // Variable-based invocation
+        PricingPlanHelper priceHelper = new PricingPlanHelper();
+        priceHelper.invokeMethod('GetCalculationProcedurePrice', inputMap, outputMap, null);
+
+        // Constant string parameter
+        String actionName = 'buildAccount';
+        CPQBillingBAMapperV2 mapper = new CPQBillingBAMapperV2();
+        mapper.invokeMethod(actionName, inputMap, outputMap, null);
+
+        // Type.forName dynamic resolution
+        Type.forName('TMFUtils');
+    }
+}
+"#;
+    parse_apex_class(
+        "force-app/main/default/classes/CPQBillingAccountPayload.cls",
+        caller_cls,
+        &mut graph,
+    );
+
+    let caller_meth = "apex::CPQBillingAccountPayload.toTmfBody";
+    let caller_file_meth = "force-app/main/default/classes/CPQBillingAccountPayload.cls::CPQBillingAccountPayload.toTmfBody";
+
+    // Multi-line chained invocation with case-insensitive resolution to buildAccount
+    assert!(
+        graph.has_edge(caller_meth, "apex::CPQBillingBAMapperV2.buildAccount"),
+        "Multi-line invokeMethod('BuildAccount') must link to apex::CPQBillingBAMapperV2.buildAccount"
+    );
+    assert!(
+        graph.has_edge(caller_file_meth, "apex::CPQBillingBAMapperV2.buildAccount")
+    );
+
+    // Same-line invocation to calculatePrice
+    assert!(
+        graph.has_edge(caller_meth, "apex::CPQBillingBAMapperV2.calculatePrice"),
+        "Same-line invokeMethod('calculatePrice') must link to apex::CPQBillingBAMapperV2.calculatePrice"
+    );
+
+    // Variable-based invocation to PricingPlanHelper
+    assert!(
+        graph.has_edge(caller_meth, "apex::PricingPlanHelper.GetCalculationProcedurePrice"),
+        "Variable-based priceHelper.invokeMethod must link to PricingPlanHelper"
+    );
+
+    // Type.forName reference
+    assert!(
+        graph.has_edge("apex::CPQBillingAccountPayload", "apex::TMFUtils"),
+        "Type.forName('TMFUtils') must create a reference edge"
+    );
+}
