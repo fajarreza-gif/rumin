@@ -61,7 +61,7 @@ impl Indexer {
         if file_name == "Makefile" || file_name == "GNUmakefile" || file_name == "rebar.config" {
             return true;
         }
-        if parsers::is_supported_json_file(file_name) {
+        if parsers::is_supported_json_file(file_name) || parsers::is_omnistudio_json_path(&path_str, file_name) {
             return true;
         }
         if parsers::is_supported_yaml_file(&path_str, file_name) {
@@ -187,6 +187,16 @@ impl Indexer {
     #[inline]
     pub fn is_supported_json_file(file_name: &str) -> bool {
         parsers::is_supported_json_file(file_name)
+    }
+
+    #[inline]
+    pub fn is_omnistudio_json_path(rel_path: &str, file_name: &str) -> bool {
+        parsers::is_omnistudio_json_path(rel_path, file_name)
+    }
+
+    #[inline]
+    pub fn parse_omnistudio_json(rel_path: &str, content: &str, graph: &mut CodeGraph) {
+        parsers::parse_omnistudio_json(rel_path, content, graph);
     }
 
     #[inline]
@@ -376,8 +386,15 @@ impl Indexer {
         } else if matches!(extension, "py") || shebang == Some("python") {
             Self::parse_python(&rel_path, &content, graph);
             Ok(true)
-        } else if parsers::is_supported_json_file(file_name) {
-            Self::parse_json_manifest(&rel_path, &content, graph);
+        } else if parsers::is_supported_json_file(file_name)
+            || parsers::is_omnistudio_json_path(&rel_path, file_name)
+            || (matches!(extension, "json") && parsers::is_omnistudio_json_content(&content))
+        {
+            if parsers::is_omnistudio_json_path(&rel_path, file_name) || parsers::is_omnistudio_json_content(&content) {
+                parsers::parse_omnistudio_json(&rel_path, &content, graph);
+            } else {
+                Self::parse_json_manifest(&rel_path, &content, graph);
+            }
             Ok(true)
         } else if parsers::is_supported_yaml_file(&rel_path, file_name)
             || (matches!(extension, "yaml" | "yml") && parsers::is_supported_yaml_content(&content))

@@ -52,6 +52,12 @@
      - **Apex Triggers (`.trigger`):** Triggers on SObjects (`before insert`, `after update`), establishing causal `DependsOn` edges to SObject tables.
      - **Custom SObjects & Fields (`*.object-meta.xml`, `*.field-meta.xml`):** SObject tables, custom fields (`Field__c`), and `<referenceTo>` foreign keys.
      - **Custom Metadata (`*.md-meta.xml`):** CMDT records and field values (`cmdt::<Type>.<Record>`).
+     - **Declarative JSON Source Code & OmniStudio DataPacks (`*_DataPack.json`, `*_Items.json`, `_Element_*.json`):**
+       - **Integration Procedures (IPs):** Relational flow graphs with step sequencing, conditional branch hierarchies, Apex invocations (`remoteClass`, `remoteMethod`), DataRaptor invocations, and sub-IP branching.
+       - **DataRaptors (DataMappers):** SObject input/output mapping items (`InputObjectName`, `InputFieldName`, `OutputObjectName`, `OutputFieldName`).
+       - **DataRaptor Formulas (Node-Level Lineage):** Deep tokenization of `FormulaExpression` mapping source field dependencies (`sobject::Object.Field`) directly through formula transformation nodes into target result paths.
+       - **Enterprise Product Catalog (EPC):** Product2 catalog entities, `ProductChildItem` component hierarchies, `vlocity_cmt__JSONAttribute__c` attribute overrides, and pricing decision matrices.
+       - **OmniScripts & OmniCards:** Interactive multi-step flows, custom LWC invocations (`lwc::<Name>`), and remote action links.
      - **OmniStudio Metadata (`*.oip-meta.xml`, `*.os-meta.xml`, `*.ouc-meta.xml`):** Integration Procedures, OmniScripts, OmniUiCards, step hierarchies, remote Apex actions, DataRaptor transform dependencies, and Sub-IPs.
      - **SOQL Queries (`.soql`):** Standalone query files referencing SObjects and fields.
      - **Aura & Visualforce (`.cmp`, `.app`, `.evt`, `.intf`, `.page`, `.component`):** Aura components with attributes and Visualforce pages with controller and multi-extension bindings.

@@ -294,7 +294,7 @@ impl HippocampalEngine {
 
         let mut top_symbols = Vec::new();
         let mut formatted_lines = Vec::new();
-        /// formatted_lines.push(format!("# HIPPOCAMPAL ASSOCIATIVE CONTEXT (Query: \"{}\")", query_str));
+        // formatted_lines.push(format!("# HIPPOCAMPAL ASSOCIATIVE CONTEXT (Query: \"{}\")", query_str));
         formatted_lines.push(format!("Active Knowledge Graph: {} nodes, {} edges\n", graph.node_count(), graph.edge_count()));
 
         let mut explanatory_paths = Vec::new();

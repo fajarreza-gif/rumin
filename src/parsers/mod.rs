@@ -6,6 +6,7 @@ pub mod telecom;
 pub mod vb;
 pub mod json_manifests;
 pub mod yaml_manifests;
+pub mod omnistudio_json;
 
 pub use systems::*;
 pub use scripting::*;
@@ -15,6 +16,7 @@ pub use telecom::*;
 pub use vb::*;
 pub use json_manifests::*;
 pub use yaml_manifests::*;
+pub use omnistudio_json::*;
 
 use std::fs::File;
 use std::io::Read;
@@ -113,7 +115,13 @@ pub fn parse_generic_source(rel_path: &str, content: &str, lang: &str, graph: &m
             return;
         }
         "json" | "jsonc" => {
-            parse_json_manifest(rel_path, content, graph);
+            let path = Path::new(rel_path);
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if is_omnistudio_json_path(rel_path, file_name) || is_omnistudio_json_content(content) {
+                parse_omnistudio_json(rel_path, content, graph);
+            } else {
+                parse_json_manifest(rel_path, content, graph);
+            }
             return;
         }
         "yaml" | "yml" => {

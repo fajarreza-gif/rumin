@@ -58,6 +58,15 @@ pub fn is_supported_json_file(file_name: &str) -> bool {
         return true;
     }
 
+    // 7. OmniStudio, Vlocity & Salesforce declarative JSON source code
+    if file_name.ends_with("_DataPack.json")
+        || file_name.ends_with(".datapack.json")
+        || file_name.ends_with("_Items.json")
+        || (file_name.contains("_Element_") && file_name.ends_with(".json"))
+    {
+        return true;
+    }
+
     false
 }
 
@@ -79,6 +88,14 @@ pub fn parse_json_manifest(rel_path: &str, content: &str, graph: &mut CodeGraph)
 
     let path = Path::new(rel_path);
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    // OmniStudio / Vlocity / Communications Cloud declarative source takes precedence
+    if crate::parsers::omnistudio_json::is_omnistudio_json_path(rel_path, file_name)
+        || crate::parsers::omnistudio_json::is_omnistudio_json_content(content)
+    {
+        crate::parsers::omnistudio_json::parse_omnistudio_json(rel_path, content, graph);
+        return;
+    }
 
     // OpenAPI / Swagger takes precedence if detection matches structure or filename
     let is_openapi = obj.contains_key("openapi")
