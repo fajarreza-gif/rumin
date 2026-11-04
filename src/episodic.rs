@@ -38,14 +38,21 @@ impl EpisodicEngine {
         tags: &[String],
     ) -> Result<Episode> {
         let conn = self.db.conn();
-        let max_id: i64 = conn
-            .query_row(
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS episode_seq (id INTEGER PRIMARY KEY AUTOINCREMENT)", []);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM episode_seq", [], |r| r.get(0)).unwrap_or(0);
+        if count == 0 {
+            let max_existing: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(CAST(SUBSTR(id, 4) AS INTEGER)), 0) FROM episodes WHERE id LIKE 'ep_%'",
                 [],
                 |r| r.get(0),
-            )
-            .unwrap_or(0);
-        let id = format!("ep_{}", max_id + 1);
+            ).unwrap_or(0);
+            if max_existing > 0 {
+                let _ = conn.execute("INSERT INTO episode_seq (id) VALUES (?1)", [max_existing]);
+            }
+        }
+        conn.execute("INSERT INTO episode_seq DEFAULT VALUES", [])?;
+        let seq = conn.last_insert_rowid();
+        let id = format!("ep_{}", seq);
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()

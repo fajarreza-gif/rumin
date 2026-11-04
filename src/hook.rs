@@ -58,19 +58,34 @@ impl CircuitBreaker {
         }
     }
 
-    /// Install git pre-commit hook into repository
+    /// Install git pre-commit hook into repository non-destructively
     pub fn install_git_hook(repo_root: &Path) -> Result<PathBuf> {
         let hooks_dir = repo_root.join(".git/hooks");
         fs::create_dir_all(&hooks_dir)?;
         let hook_path = hooks_dir.join("pre-commit");
 
-        let script = r#"#!/usr/bin/env bash
+        let safety_snippet = r#"
 # ai-rumin safety hook
 if command -v ai-rumin &> /dev/null; then
     ai-rumin verify || exit 1
 fi
 "#;
-        fs::write(&hook_path, script)?;
+
+        if hook_path.exists() {
+            let existing = fs::read_to_string(&hook_path)?;
+            if !existing.contains("ai-rumin verify") {
+                // Non-destructive backup of existing pre-commit hook
+                let backup_path = hooks_dir.join("pre-commit.rumin.bak");
+                let _ = fs::copy(&hook_path, backup_path);
+
+                use std::io::Write;
+                let mut file = fs::OpenOptions::new().append(true).open(&hook_path)?;
+                file.write_all(safety_snippet.as_bytes())?;
+            }
+        } else {
+            let script = format!("#!/usr/bin/env bash\n{}", safety_snippet);
+            fs::write(&hook_path, script)?;
+        }
 
         #[cfg(unix)]
         {

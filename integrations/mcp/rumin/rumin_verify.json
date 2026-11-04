@@ -1,0 +1,1 @@
+{"name":"rumin_verify","description":"Verify structural integrity of the graph, detecting dangling references and orphaned interfaces.","parameters":{"properties":{},"type":"object"}}

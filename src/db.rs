@@ -36,6 +36,10 @@ impl MemoryDb {
             CREATE INDEX IF NOT EXISTS idx_episodes_title ON episodes(title);
             CREATE INDEX IF NOT EXISTS idx_episodes_created_at ON episodes(created_at);
 
+            CREATE TABLE IF NOT EXISTS episode_seq (
+                id INTEGER PRIMARY KEY AUTOINCREMENT
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -77,7 +81,7 @@ impl MemoryDb {
     }
 
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap()
+        self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn path(&self) -> &Path {

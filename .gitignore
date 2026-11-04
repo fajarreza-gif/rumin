@@ -9,3 +9,6 @@ venv/
 *.sock
 .aiedit/
 .rumin/
+*.tar.zst
+*.resume
+resume*

@@ -48,11 +48,13 @@
    - **XML & HTML:** Structural tags, beans, dependencies, semantic tags (`<header>`, `<form>`, `<main>`), elements with IDs, web components (`.xml`, `.html`, `.htm`).
    - **Oracle SQL & PL/SQL:** Packages, package bodies, procedures, functions, triggers, custom types, sequences (`.sql`, `.pls`, `.pks`, `.pkb`, `.prc`, `.fnc`, `.trg`).
    - **Salesforce Ecosystem:**
-     - **Apex Classes (`.cls`):** Classes (`with/without/inherited sharing`), interfaces, enums, annotated methods (`@AuraEnabled`, `@InvocableMethod`, `@RemoteAction`, `@isTest`), and embedded SOQL query extraction.
+     - **Apex Classes (`.cls`):** Classes (`with/without/inherited sharing`), interfaces, enums, annotated methods (`@AuraEnabled`, `@InvocableMethod`, `@RemoteAction`, `@isTest`), inner classes, and granular SOQL query field extraction.
      - **Apex Triggers (`.trigger`):** Triggers on SObjects (`before insert`, `after update`), establishing causal `DependsOn` edges to SObject tables.
-     - **Custom SObjects & Fields (`*.object-meta.xml`, `*.field-meta.xml`):** Tables and custom fields (`Field__c`) with topological `Contains` edges.
-     - **SOQL Queries (`.soql`):** Standalone query files referencing SObjects.
-     - **Aura Components (`.cmp`, `.app`, `.evt`, `.intf`):** UI markup linking `References` edges to Apex controller classes.
+     - **Custom SObjects & Fields (`*.object-meta.xml`, `*.field-meta.xml`):** SObject tables, custom fields (`Field__c`), and `<referenceTo>` foreign keys.
+     - **Custom Metadata (`*.md-meta.xml`):** CMDT records and field values (`cmdt::<Type>.<Record>`).
+     - **OmniStudio Metadata (`*.oip-meta.xml`, `*.os-meta.xml`, `*.ouc-meta.xml`):** Integration Procedures, OmniScripts, OmniUiCards, step hierarchies, remote Apex actions, DataRaptor transform dependencies, and Sub-IPs.
+     - **SOQL Queries (`.soql`):** Standalone query files referencing SObjects and fields.
+     - **Aura & Visualforce (`.cmp`, `.app`, `.evt`, `.intf`, `.page`, `.component`):** Aura components with attributes and Visualforce pages with controller and multi-extension bindings.
    - **Erlang & OTP Ecosystem:**
      - **Modules (`.erl`):** Modules (`-module`), generic behaviors (`-behaviour(gen_server/supervisor)`), records (`-record`), macros (`-define`), types (`-type`), header imports (`-include`), functions by arity (`func/N`), and cross-module calls (`Mod:func`).
      - **Headers (`.hrl`):** Shared records, macros, and type specifications.
@@ -65,6 +67,11 @@
      - **TargetEndpoints (`<TargetEndpoint>`):** Backend HTTP connections (`<URL>`) and backend pipeline steps.
      - **Policies:** Apigee policy catalogue (`VerifyAPIKey`, `SpikeArrest`, `Javascript`, `JavaCallout`, `AssignMessage`, `OAuthV2`, `Quota`, `ResponseCache`, `ServiceCallout`, etc.).
      - **Resource & Class References:** Links Javascript policies to script files (`jsc://*.js`) and JavaCallout policies to Java classes (`<ClassName>`).
+   - **Visual Basic, VBA, & VBScript Ecosystem:**
+     - **VB.NET (`.vb`):** Namespaces, classes, interfaces, structures, modules, enums, auto and full properties, events, delegates, subroutines, functions, `Inherits`, `Implements`, `Imports`, and multi-line continuations (`_`).
+     - **Classic Visual Basic 6.0 & VBA (`.bas`, `.cls`, `.frm`, `.ctl`, `.vba`):** Standard modules (`Attribute VB_Name`), User-Defined Types (`Type ... End Type`), Win32 API DLL P/Invoke (`Declare PtrSafe Function ... Lib`), UserForms (`.frm` GUI control trees), ActiveX UserControls (`.ctl`), and Class Modules (`.cls`) with automatic disambiguation against Salesforce Apex.
+     - **VBScript (`.vbs`):** Windows Script Host and classic ASP automation scripts, classes, subs, and functions.
+     - **COM & ActiveX Graph Dependencies:** Automatic discovery of early and late-bound COM automation (`CreateObject("ProgID")`, `GetObject`, `WScript.CreateObject`, `Set ... = New ...`) generating cross-file associative edges to `com::<ProgID>` nodes.
    - **Makefiles:** Detects Makefiles natively, mapping targets to dependency DAG edges.
    - **Extensionless Scripts:** Byte-level shebang sniffing for `bash`, `sh`, `python`, `node`, `bun`, `deno`, `ts-node`, and `escript`.
    - **Multi-Dialect SQL & Shell AST:** Multi-dialect SQL migrations (Oracle, PostgreSQL, MySQL, SQLite, Snowflake, BigQuery) and shell environment extraction.
@@ -105,7 +112,15 @@
 - **Rust Toolchain:** `cargo` (1.75+)
 - **Python:** `python3` (3.9+)
 
-### Build the Rust Binary
+### ⚡ 1-Command Automated Installation (Recommended)
+Run the automated installer to install the binary, MCP server, tool schemas, global agent rules, and circuit breaker hook:
+```bash
+./install.sh --yes
+# Or via make:
+make install
+```
+
+### Manual Build from Source
 ```bash
 cd ~/dev/air-mem/ai-rumin
 cargo build --release
@@ -225,11 +240,12 @@ Enforce token limits, block hazardous commands, and install pre-commit integrity
 ```
 
 ### 15. Run as an MCP Server (`serve`)
-Launch the stdio JSON-RPC server exposing all **18 MCP tools**:
-- **Code Graph & Topology**: `rumin_query`, `rumin_digest`, `rumin_index`, `rumin_traverse`, `rumin_sync`, `rumin_checkpoint`, `rumin_diff`, `rumin_hazards`, `rumin_verify`, `rumin_audit`
+Launch the stdio JSON-RPC server exposing all **25 native MCP tools**:
+- **Code Graph & Topology**: `rumin_query`, `rumin_digest`, `rumin_index`, `rumin_traverse`, `rumin_sync`, `rumin_checkpoint`, `rumin_diff`, `rumin_hazards`, `rumin_impact`, `rumin_verify`, `rumin_audit`
 - **Cognitive Daemon & Episodes**: `rumin_record_episode`, `rumin_search_episodes`
 - **Session Memory**: `rumin_session_create`, `rumin_session_list`, `rumin_session_inspect`, `rumin_add_working_note`
 - **Distillation & Traces**: `rumin_consolidate`, `rumin_ingest_trace`
+- **Enterprise & Architecture**: `rumin_switch_repo`, `rumin_describe`, `rumin_find_path`, `rumin_audit_limits`, `rumin_federate_repo`, `rumin_index_file`
 
 ```bash
 ./target/release/ai-rumin serve

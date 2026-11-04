@@ -1,0 +1,1 @@
+{"name":"rumin_sync","description":"Perform fast incremental sync across repository, updating modified/added files and pruning deleted ones.","parameters":{"properties":{"force":{"description":"Force full re-check of all files","type":"boolean"}},"type":"object"}}

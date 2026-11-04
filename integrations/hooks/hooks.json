@@ -1,0 +1,15 @@
+{
+  "read-interceptor": {
+    "PreToolUse": [
+      {
+        "matcher": "read_file|view_file|run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/intercept_read.py"
+          }
+        ]
+      }
+    ]
+  }
+}

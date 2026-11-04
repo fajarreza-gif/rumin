@@ -18,7 +18,6 @@ pub enum EntityType {
     Variable,     // Exported shell variable / constant
     Rule,         // Static hazard or invariant rule
     Tag,          // XML / HTML element or component tag
-    #[serde(other)]
     Unknown,
 }
 
@@ -33,7 +32,31 @@ pub struct CodeEntity {
     pub line_end: usize,
     pub signature: Option<String>,
     pub docstring: Option<String>,
-    pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_metadata")]
+    pub metadata: HashMap<String, String>,
+}
+
+fn deserialize_metadata<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if deserializer.is_human_readable() {
+        let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(deserializer)?;
+        let mut map = HashMap::with_capacity(raw.len());
+        for (k, v) in raw {
+            let s = match v {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            map.insert(k, s);
+        }
+        Ok(map)
+    } else {
+        HashMap::<String, String>::deserialize(deserializer)
+    }
 }
 
 impl CodeEntity {
@@ -70,6 +93,7 @@ pub enum EdgeKind {
     References,
     Implements,
     DefinesTable,
+    SemanticBridge,
 }
 
 /// Token budget constraints for context delivery.
@@ -79,6 +103,12 @@ pub struct ContextBudget {
     pub max_symbols: usize,
     pub include_signatures: bool,
     pub expand_bodies: bool,
+    #[serde(default)]
+    pub types: Option<Vec<String>>,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub dampen_hubs: bool,
 }
 
 impl Default for ContextBudget {
@@ -88,6 +118,9 @@ impl Default for ContextBudget {
             max_symbols: 15,
             include_signatures: true,
             expand_bodies: false,
+            types: None,
+            path_prefix: None,
+            dampen_hubs: false,
         }
     }
 }

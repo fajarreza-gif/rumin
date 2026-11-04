@@ -9,11 +9,23 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 
+#[derive(Clone)]
 pub struct FileWatcher {
     repo_root: PathBuf,
     graph: Arc<ArcSwap<CodeGraph>>,
     sidecar: Arc<SidecarClient>,
     running: Arc<AtomicBool>,
+}
+
+pub struct WatcherGuard {
+    _watcher: RecommendedWatcher,
+    file_watcher: FileWatcher,
+}
+
+impl Drop for WatcherGuard {
+    fn drop(&mut self) {
+        self.file_watcher.stop();
+    }
 }
 
 impl FileWatcher {
@@ -30,9 +42,14 @@ impl FileWatcher {
         }
     }
 
-    pub fn start(&self) -> anyhow::Result<RecommendedWatcher> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
+    pub fn start(&self) -> anyhow::Result<WatcherGuard> {
+        let (async_tx, mut async_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut watcher = RecommendedWatcher::new(
+            move |res| {
+                let _ = async_tx.send(res);
+            },
+            Config::default(),
+        )?;
 
         watcher.watch(&self.repo_root, RecursiveMode::Recursive)?;
         info!("Started background file watcher on {:?}", self.repo_root);
@@ -46,9 +63,23 @@ impl FileWatcher {
         tokio::spawn(async move {
             let indexer = Indexer::new(&repo_root);
             while running.load(Ordering::SeqCst) {
-                // Collect events with debounce
-                let mut should_sync = false;
-                while let Ok(res) = rx.try_recv() {
+                // Wait asynchronously until an event arrives - zero CPU when idle
+                let first_res = match async_rx.recv().await {
+                    Some(res) => res,
+                    None => break,
+                };
+
+                let mut should_sync = match first_res {
+                    Ok(ref event) => Self::is_relevant_event(event, &repo_root),
+                    Err(ref e) => {
+                        error!("Watch error: {:?}", e);
+                        false
+                    }
+                };
+
+                // Debounce window (150ms): drain rapid successive events
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                while let Ok(res) = async_rx.try_recv() {
                     match res {
                         Ok(event) => {
                             if Self::is_relevant_event(&event, &repo_root) {
@@ -59,21 +90,44 @@ impl FileWatcher {
                     }
                 }
 
-                if should_sync {
+                if should_sync && running.load(Ordering::SeqCst) {
                     info!("Change detected by watcher, performing lock-free incremental sync...");
                     let mut g = (*graph.load_full()).clone();
                     if let Err(e) = indexer.sync_repository(&mut g, &sidecar, false).await {
                         error!("Incremental sync failed: {:?}", e);
                     } else {
-                        graph.store(Arc::new(g));
+                        let synced_arc = Arc::new(g);
+                        graph.rcu(|current| {
+                            let mut has_new_episode = false;
+                            for idx in current.graph.node_indices() {
+                                let ent = &current.graph[idx];
+                                if ent.id.starts_with("episode::") && synced_arc.get_entity(&ent.id).is_none() {
+                                    has_new_episode = true;
+                                    break;
+                                }
+                            }
+                            if !has_new_episode {
+                                synced_arc.clone()
+                            } else {
+                                let mut merged = (*synced_arc).clone();
+                                for idx in current.graph.node_indices() {
+                                    let ent = &current.graph[idx];
+                                    if ent.id.starts_with("episode::") && merged.get_entity(&ent.id).is_none() {
+                                        merged.add_entity(ent.clone());
+                                    }
+                                }
+                                Arc::new(merged)
+                            }
+                        });
                     }
                 }
-
-                tokio::time::sleep(Duration::from_millis(150)).await;
             }
         });
 
-        Ok(watcher)
+        Ok(WatcherGuard {
+            _watcher: watcher,
+            file_watcher: self.clone(),
+        })
     }
 
     pub fn stop(&self) {

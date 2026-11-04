@@ -1,0 +1,1 @@
+{"name":"rumin_session_create","description":"Create a new agent task session for conversation-scoped tracking.","parameters":{"properties":{"metadata":{"description":"Optional session metadata","type":"object"},"name":{"description":"Session title or task name","type":"string"}},"required":["name"],"type":"object"}}

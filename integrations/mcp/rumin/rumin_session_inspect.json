@@ -1,0 +1,1 @@
+{"name":"rumin_session_inspect","description":"Inspect session metadata and its sequence of recorded working notes.","parameters":{"properties":{"session_id":{"description":"Session ID e.g. sess_abc123","type":"string"}},"required":["session_id"],"type":"object"}}

@@ -8,7 +8,7 @@ use crate::session::SessionManager;
 use crate::sidecar::SidecarClient;
 use crate::trace::TraceIngestor;
 use crate::types::ContextBudget;
-use crate::watcher::FileWatcher;
+use crate::watcher::{FileWatcher, WatcherGuard};
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use petgraph::Direction;
@@ -31,6 +31,7 @@ pub struct MCPServer {
     trace: Arc<RwLock<Arc<TraceIngestor>>>,
     ready: Arc<Notify>,
     is_ready: Arc<AtomicBool>,
+    watcher_guard: Arc<RwLock<Option<WatcherGuard>>>,
 }
 
 impl MCPServer {
@@ -51,6 +52,7 @@ impl MCPServer {
             trace: Arc::new(RwLock::new(trace)),
             ready: Arc::new(Notify::new()),
             is_ready: Arc::new(AtomicBool::new(false)),
+            watcher_guard: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -135,10 +137,11 @@ impl MCPServer {
         // Start background FileWatcher so graph remains in sync across file modifications
         let cur_repo = self.repo_root.read().await.clone();
         let watcher = FileWatcher::new(cur_repo, self.graph.clone(), self.sidecar.clone());
-        let _watcher_guard = watcher.start().ok();
-        if _watcher_guard.is_some() {
+        let watcher_guard = watcher.start().ok();
+        if watcher_guard.is_some() {
             info!("Live FileWatcher started in background for MCP server.");
         }
+        *self.watcher_guard.write().await = watcher_guard;
 
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
@@ -209,15 +212,46 @@ impl MCPServer {
                     "tools": [
                         {
                             "name": "rumin_query",
-                            "description": "Retrieve multi-hop associative subgraph and context for an issue or symbol under strict token budgets using Personalized PageRank.",
+                            "description": "CRITICAL / PRIMARY CODE NAVIGATION TOOL: MUST be called BEFORE any file reading, grep, or search. Fast associative symbol and context search using Personalized PageRank over AST symbols, call graphs, references, and documentation. Returns precise file paths, line numbers, and architectural context under strict token budgets.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "query": { "type": "string", "description": "Natural language query or symbol name" },
                                     "budget": { "type": "integer", "description": "Max context tokens (default: 1500)" },
-                                    "expand_bodies": { "type": "boolean", "description": "Include actual AST code snippet slices directly in response" }
+                                    "expand_bodies": { "type": "boolean", "description": "Include actual AST code snippet slices directly in response" },
+                                    "types": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "Optional list of entity types to restrict results to (e.g. 'class', 'custom_metadata', 'apex_class', 'decision_matrix', 'table')"
+                                    },
+                                    "path_prefix": {
+                                        "type": "string",
+                                        "description": "Optional path prefix constraint (e.g. 'force-app/main/default/')"
+                                    },
+                                    "dampen_hubs": {
+                                        "type": "boolean",
+                                        "description": "Apply inverse degree damping to penalize high-centrality hub nodes (e.g. Account, Case)"
+                                    }
                                 },
                                 "required": ["query"]
+                            }
+                        },
+                        {
+                            "name": "rumin_impact",
+                            "description": "PRE-CHANGE IMPACT ANALYSIS TOOL: MUST be called before modifying or refactoring code. Performs 4-quadrant architectural impact analysis (upstream UI/service callers, downstream callees, covering unit tests, and schema footprint).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "symbol": {
+                                        "type": "string",
+                                        "description": "Symbol name or node ID to analyze"
+                                    },
+                                    "depth": {
+                                        "type": "integer",
+                                        "description": "Maximum traversal depth (default: 2)"
+                                    }
+                                },
+                                "required": ["symbol"]
                             }
                         },
                         {
@@ -238,7 +272,7 @@ impl MCPServer {
                         },
                         {
                             "name": "rumin_traverse",
-                            "description": "Traverse directional callers, callees, or implementations of a symbol.",
+                            "description": "PRIMARY CALL-GRAPH & DEPENDENCY TOOL: Traverse directional callers, callees, or implementations of a symbol across multi-hop dependencies.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
@@ -413,6 +447,61 @@ impl MCPServer {
                                 },
                                 "required": ["repo_path"]
                             }
+                        },
+                        {
+                            "name": "rumin_describe",
+                            "description": "PRIMARY SYMBOL INTROSPECTION TOOL: MUST be used to inspect any class, method, function, interface, struct, or table before reading raw files. Returns docstrings, fields, methods, types, and all incoming/outgoing graph relationships (callers, references, inheritance).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "entity_name": { "type": "string", "description": "Symbol name or node ID (e.g., 'Account', 'SIEBEL.S_ASSET', 'AssetService', 'pkg/auth.go')" }
+                                },
+                                "required": ["entity_name"]
+                            }
+                        },
+                        {
+                            "name": "rumin_find_path",
+                            "description": "PRIMARY ARCHITECTURAL PATH FINDING TOOL: Discovers execution, dataflow, and dependency paths connecting two symbols or files across polyglot boundaries.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "source_symbol": { "type": "string", "description": "Source symbol name or node ID" },
+                                    "target_symbol": { "type": "string", "description": "Target symbol name or node ID" },
+                                    "max_depth": { "type": "integer", "description": "Maximum path search depth (default 5)" }
+                                },
+                                "required": ["source_symbol", "target_symbol"]
+                            }
+                        },
+                        {
+                            "name": "rumin_audit_limits",
+                            "description": "Audit runtime governor limits and concurrency hazards in Apex/database code (SOQL inside loops, DML in loops, callouts in loops, unbounded queries on high-cardinality tables).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {}
+                            }
+                        },
+                        {
+                            "name": "rumin_federate_repo",
+                            "description": "Federate an external repository or microservice into the active memory graph under a namespace alias, enabling cross-repository pathfinding and architecture queries.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "repo_path": { "type": "string", "description": "Absolute path to repository to federate" },
+                                    "alias": { "type": "string", "description": "Namespace prefix alias (e.g., 'catalist', 'billing')" }
+                                },
+                                "required": ["repo_path"]
+                            }
+                        },
+                        {
+                            "name": "rumin_index_file",
+                            "description": "Surgically re-index a single file into the knowledge graph in sub-50ms without re-scanning the entire workspace.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "file_path": { "type": "string", "description": "Relative or absolute path to the file to re-index" }
+                                },
+                                "required": ["file_path"]
+                            }
                         }
                     ]
                 }
@@ -463,16 +552,25 @@ impl MCPServer {
                 let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
                 let budget_tokens = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(1500) as usize;
                 let expand_bodies = args.get("expand_bodies").and_then(|e| e.as_bool()).unwrap_or(false);
+                let types: Option<Vec<String>> = args.get("types")
+                    .and_then(|t| t.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect());
+                let path_prefix = args.get("path_prefix").and_then(|p| p.as_str()).map(|s| s.to_string());
+                let dampen_hubs = args.get("dampen_hubs").and_then(|d| d.as_bool()).unwrap_or(false);
 
                 let budget = ContextBudget {
                     total_token_limit: budget_tokens,
                     max_symbols: if expand_bodies { 8 } else { 12 },
                     include_signatures: true,
                     expand_bodies,
+                    types,
+                    path_prefix,
+                    dampen_hubs,
                 };
 
                 let graph_snapshot = self.graph.load();
-                let res = self.engine.query(&graph_snapshot, query, &budget);
+                let repo_root = self.repo_root.read().await.clone();
+                let res = self.engine.query_with_root(&graph_snapshot, query, &budget, Some(&repo_root));
                 res.formatted_context
             }
 
@@ -594,7 +692,68 @@ impl MCPServer {
                     Ok(base_graph) => {
                         let graph_snapshot = self.graph.load();
                         let delta = base_graph.diff(&graph_snapshot);
-                        serde_json::to_string_pretty(&delta).unwrap_or_else(|_| "{}".to_string())
+
+                        // Return bounded summary to stay within JSON-RPC frame limits
+                        let mut summary = format!(
+                            "=== TOPOLOGICAL GRAPH DIFF ===\n+ Added Entities: {}\n~ Modified Entities: {}\n- Removed Entities: {}\n+ Added Edges: {}\n- Removed Edges: {}\n",
+                            delta.added_entities.len(),
+                            delta.modified_entities.len(),
+                            delta.removed_entities.len(),
+                            delta.added_edges.len(),
+                            delta.removed_edges.len(),
+                        );
+
+                        if !delta.added_entities.is_empty() {
+                            summary.push_str("\nSample Added Entities (top 20):\n");
+                            for ent in delta.added_entities.iter().take(20) {
+                                summary.push_str(&format!("  + [{:?}] {} ({})\n", ent.entity_type, ent.name, ent.file_path));
+                            }
+                            if delta.added_entities.len() > 20 {
+                                summary.push_str(&format!("  ... and {} more added entities\n", delta.added_entities.len() - 20));
+                            }
+                        }
+
+                        if !delta.modified_entities.is_empty() {
+                            summary.push_str("\nSample Modified Entities (top 20):\n");
+                            for ent in delta.modified_entities.iter().take(20) {
+                                summary.push_str(&format!("  ~ [{:?}] {} ({})\n", ent.entity_type, ent.name, ent.file_path));
+                            }
+                            if delta.modified_entities.len() > 20 {
+                                summary.push_str(&format!("  ... and {} more modified entities\n", delta.modified_entities.len() - 20));
+                            }
+                        }
+
+                        if !delta.removed_entities.is_empty() {
+                            summary.push_str("\nSample Removed Entities (top 20):\n");
+                            for id in delta.removed_entities.iter().take(20) {
+                                summary.push_str(&format!("  - {}\n", id));
+                            }
+                            if delta.removed_entities.len() > 20 {
+                                summary.push_str(&format!("  ... and {} more removed entities\n", delta.removed_entities.len() - 20));
+                            }
+                        }
+
+                        if !delta.added_edges.is_empty() {
+                            summary.push_str("\nSample Added Edges (top 10):\n");
+                            for (u, v, k) in delta.added_edges.iter().take(10) {
+                                summary.push_str(&format!("  + {} --[{:?}]--> {}\n", u, k, v));
+                            }
+                            if delta.added_edges.len() > 10 {
+                                summary.push_str(&format!("  ... and {} more added edges\n", delta.added_edges.len() - 10));
+                            }
+                        }
+
+                        if !delta.removed_edges.is_empty() {
+                            summary.push_str("\nSample Removed Edges (top 10):\n");
+                            for (u, v, k) in delta.removed_edges.iter().take(10) {
+                                summary.push_str(&format!("  - {} --[{:?}]--> {}\n", u, k, v));
+                            }
+                            if delta.removed_edges.len() > 10 {
+                                summary.push_str(&format!("  ... and {} more removed edges\n", delta.removed_edges.len() - 10));
+                            }
+                        }
+
+                        summary
                     }
                     Err(e) => format!("Error reading checkpoint for diff: {}", e),
                 }
@@ -608,6 +767,20 @@ impl MCPServer {
 
                 let graph_snapshot = self.graph.load();
                 let report = graph_snapshot.blast_radius(&symbols);
+                serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+            }
+
+            "rumin_impact" => {
+                let symbol = args.get("symbol")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                let depth = args.get("depth")
+                    .and_then(|d| d.as_u64())
+                    .map(|d| d as usize)
+                    .unwrap_or(2);
+
+                let graph_snapshot = self.graph.load();
+                let report = graph_snapshot.impact_analysis(symbol, depth);
                 serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
             }
 
@@ -714,6 +887,12 @@ impl MCPServer {
                 let mut new_graph = (*self.graph.load_full()).clone();
                 match MemoryConsolidator::consolidate(&mut new_graph) {
                     Ok(report) => {
+                        let repo = self.repo_root.read().await.clone();
+                        let cp_path = repo.join(".rumin").join("checkpoints").join("default.bin");
+                        if let Some(parent) = cp_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = new_graph.save_binary_checkpoint(&cp_path);
                         self.graph.store(Arc::new(new_graph));
                         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
                     }
@@ -765,6 +944,18 @@ impl MCPServer {
                         *self.trace.write().await = new_trace;
                         self.graph.store(Arc::new(new_graph));
 
+                        // Restart live FileWatcher on switched repo
+                        let new_watcher = FileWatcher::new(new_path.clone(), self.graph.clone(), self.sidecar.clone());
+                        match new_watcher.start() {
+                            Ok(guard) => {
+                                *self.watcher_guard.write().await = Some(guard);
+                                info!("Restarted live FileWatcher for switched repo: {:?}", new_path);
+                            }
+                            Err(e) => {
+                                error!("Failed to restart FileWatcher for {:?}: {:?}", new_path, e);
+                            }
+                        }
+
                         let stats = self.graph.load().summary_stats();
                         json!({
                             "status": "switched",
@@ -773,6 +964,91 @@ impl MCPServer {
                         }).to_string()
                     }
                     Err(e) => format!("Error initializing database for new repository: {}", e),
+                }
+            }
+
+            "rumin_describe" => {
+                let entity_name = args.get("entity_name").and_then(|n| n.as_str()).unwrap_or("");
+                if entity_name.is_empty() {
+                    return "Error: entity_name argument is required".to_string();
+                }
+                let g = self.graph.load();
+                match g.describe_entity(entity_name) {
+                    Some(desc) => serde_json::to_string_pretty(&desc).unwrap_or_else(|_| "{}".to_string()),
+                    None => json!({
+                        "error": format!("Entity not found: '{}'", entity_name)
+                    }).to_string(),
+                }
+            }
+
+            "rumin_find_path" => {
+                let source = args.get("source_symbol").and_then(|s| s.as_str()).unwrap_or("");
+                let target = args.get("target_symbol").and_then(|t| t.as_str()).unwrap_or("");
+                if source.is_empty() || target.is_empty() {
+                    return "Error: source_symbol and target_symbol arguments are required".to_string();
+                }
+                let max_depth = args.get("max_depth").and_then(|d| d.as_u64()).map(|d| d as usize).unwrap_or(5);
+                let g = self.graph.load();
+                let result = g.find_paths(source, target, max_depth);
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+            }
+
+            "rumin_audit_limits" => {
+                let root = self.repo_root.read().await.clone();
+                let g = self.graph.load();
+                let violations = g.audit_governor_limits(&root);
+                serde_json::to_string_pretty(&violations).unwrap_or_else(|_| "[]".to_string())
+            }
+
+            "rumin_federate_repo" => {
+                let repo_path_str = args.get("repo_path").and_then(|p| p.as_str()).unwrap_or("");
+                if repo_path_str.is_empty() {
+                    return "Error: repo_path argument is required".to_string();
+                }
+                let alias = args.get("alias").and_then(|a| a.as_str()).unwrap_or("");
+                let path = PathBuf::from(repo_path_str);
+                if !path.exists() || !path.is_dir() {
+                    return format!("Error: repository path {:?} does not exist or is not a directory", path);
+                }
+                let default_cp = path.join(".rumin/checkpoints/default.bin");
+                let other_graph = if default_cp.exists() {
+                    CodeGraph::load_binary_checkpoint(&default_cp).unwrap_or_default()
+                } else {
+                    let indexer = Indexer::new(&path);
+                    let mut g = CodeGraph::new();
+                    let _ = indexer.sync_repository(&mut g, &self.sidecar, false).await;
+                    g
+                };
+
+                let mut current_g = (*self.graph.load_full()).clone();
+                let added_count = current_g.federate_graph(&other_graph, alias);
+                self.graph.store(Arc::new(current_g));
+
+                json!({
+                    "status": "federated",
+                    "federated_repo": path.to_string_lossy(),
+                    "alias": alias,
+                    "nodes_merged": added_count,
+                    "total_nodes": self.graph.load().node_count(),
+                }).to_string()
+            }
+
+            "rumin_index_file" => {
+                let file_path_str = args.get("file_path").and_then(|p| p.as_str()).unwrap_or("");
+                if file_path_str.is_empty() {
+                    return "Error: file_path argument is required".to_string();
+                }
+                let repo_root = self.repo_root.read().await.clone();
+                let indexer = Indexer::new(&repo_root);
+                let path = PathBuf::from(file_path_str);
+
+                let mut current_g = (*self.graph.load_full()).clone();
+                match indexer.sync_single_file(&path, &mut current_g, &self.sidecar).await {
+                    Ok(report) => {
+                        self.graph.store(Arc::new(current_g));
+                        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+                    }
+                    Err(e) => format!("Error indexing file {:?}: {}", path, e),
                 }
             }
 

@@ -1,0 +1,1 @@
+{"name":"rumin_index_file","description":"Surgically re-index a single file into the knowledge graph in sub-50ms without re-scanning the entire workspace.","parameters":{"properties":{"file_path":{"description":"Relative or absolute path to the file to re-index","type":"string"}},"required":["file_path"],"type":"object"}}

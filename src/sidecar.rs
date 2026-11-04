@@ -262,4 +262,20 @@ impl SidecarClient {
             Ok(Vec::new())
         }
     }
+
+    /// Parse Visual Basic (.vb, .vba, .bas, .frm, .ctl, .vbs) through the sidecar.
+    pub async fn parse_vb(&self, file_path: &str, content: &str) -> Result<Vec<CodeEntity>> {
+        let params = serde_json::json!({
+            "file_path": file_path,
+            "content": content,
+        });
+
+        let res = self.call("parse_vb", params).await?;
+        if let Some(raw_entities) = res.get("entities") {
+            let entities: Vec<CodeEntity> = serde_json::from_value(raw_entities.clone())?;
+            Ok(entities)
+        } else {
+            Ok(Vec::new())
+        }
+    }
 }

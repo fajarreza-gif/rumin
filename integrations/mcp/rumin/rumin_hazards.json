@@ -1,0 +1,1 @@
+{"name":"rumin_hazards","description":"Perform blast radius analysis and risk scoring starting from modified symbols or files.","parameters":{"properties":{"symbols":{"description":"Root symbol IDs or file paths","items":{"type":"string"},"type":"array"}},"required":["symbols"],"type":"object"}}

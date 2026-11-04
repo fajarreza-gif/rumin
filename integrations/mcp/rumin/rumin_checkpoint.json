@@ -1,0 +1,1 @@
+{"name":"rumin_checkpoint","description":"Export or restore a high-speed compact binary checkpoint of the knowledge graph via bincode.","parameters":{"properties":{"action":{"description":"Checkpoint action","enum":["save","load"],"type":"string"},"path":{"description":"Custom checkpoint file path (optional)","type":"string"}},"required":["action"],"type":"object"}}

@@ -59,6 +59,10 @@ enum Commands {
         /// Force complete re-check of files
         #[arg(short, long, default_value_t = false)]
         force: bool,
+
+        /// Surgically sync only a single file in sub-50ms (Gap 13)
+        #[arg(long)]
+        file: Option<PathBuf>,
     },
 
     /// Save or restore a high-speed binary checkpoint via bincode
@@ -167,6 +171,60 @@ enum Commands {
         /// Maximum context token budget
         #[arg(short, long, default_value_t = 1500)]
         budget: usize,
+
+        /// Optional list of comma-separated entity types to restrict results to
+        #[arg(long)]
+        types: Option<String>,
+
+        /// Optional path prefix constraint
+        #[arg(long)]
+        path_prefix: Option<String>,
+
+        /// Apply inverse degree damping to penalize high-centrality hub nodes
+        #[arg(long, default_value_t = false)]
+        dampen_hubs: bool,
+    },
+
+    /// Perform comprehensive 4-quadrant architectural impact analysis (upstream UI, downstream callees, unit tests, schema)
+    Impact {
+        /// Target symbol name or node ID
+        symbol: String,
+
+        /// Maximum traversal depth (default: 2)
+        #[arg(short, long, default_value_t = 2)]
+        depth: usize,
+    },
+
+    /// Describe an entity or symbol in detail (docstring, child fields, methods, relationships)
+    Describe {
+        /// Symbol name or node ID (e.g., 'Account', 'SIEBEL.S_ASSET', 'AssetService')
+        entity_name: String,
+    },
+
+    /// Find directed call/dependency paths between two symbols in the code graph
+    FindPath {
+        /// Source symbol name or node ID
+        source: String,
+
+        /// Target symbol name or node ID
+        target: String,
+
+        /// Maximum search depth (default 5)
+        #[arg(short, long, default_value_t = 5)]
+        max_depth: usize,
+    },
+
+    /// Audit runtime governor limits and concurrency hazards in Apex / DB code (Gap 8)
+    AuditLimits,
+
+    /// Federate an external repository or schema into the memory graph under an alias (Gap 10)
+    Federate {
+        /// Path to external repository to federate
+        repo_path: PathBuf,
+
+        /// Optional namespace alias (e.g. 'catalist', 'billing')
+        #[arg(short, long, default_value = "")]
+        alias: String,
     },
 
     /// Start the Model Context Protocol (MCP) stdio server
@@ -224,7 +282,13 @@ async fn load_or_sync_graph(
 
     let sidecar = SidecarClient::new(sidecar_script);
     let indexer = Indexer::new(repo_root);
-    let _ = indexer.sync_repository(&mut graph, &sidecar, false).await?;
+    let stats = indexer.sync_repository(&mut graph, &sidecar, false).await?;
+    if stats.added > 0 || stats.modified > 0 || stats.deleted > 0 {
+        eprintln!(
+            "✓ Synchronized graph: +{} added, ~{} modified, -{} deleted, {} unchanged",
+            stats.added, stats.modified, stats.deleted, stats.unchanged
+        );
+    }
 
     if let Ok(db) = MemoryDb::open(repo_root) {
         let episodic = EpisodicEngine::new(Arc::new(db));
@@ -244,20 +308,42 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let repo_root = if cli.repo_path == std::path::Path::new(".") {
-        // Walk upwards from current working directory to find nearest .git or .rumin project root
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut cur = cwd.clone();
-        let mut root = cwd;
-        loop {
-            if cur.join(".git").exists() || cur.join(".rumin").exists() {
-                root = cur;
-                break;
-            }
-            if !cur.pop() {
-                break;
+        // 1. If cwd explicitly has .rumin or .git, it is definitely the project root
+        if cwd.join(".rumin").exists() || cwd.join(".git").exists() {
+            cwd.canonicalize().unwrap_or(cwd)
+        } else {
+            // 2. Check if cwd has common project manifest files (it is its own project)
+            let has_local_manifest = [
+                "Cargo.toml", "package.json", "go.mod", "pom.xml", "requirements.txt",
+                "pyproject.toml", "sfdx-project.json", "Makefile", "rebar.config", "CMakeLists.txt",
+            ]
+            .iter()
+            .any(|f| cwd.join(f).exists());
+
+            if has_local_manifest {
+                cwd.canonicalize().unwrap_or(cwd)
+            } else {
+                // 3. Walk upwards looking ONLY for nearest .git directory (e.g. inside a submodule or subfolder)
+                // NEVER walk into a parent just because the parent has a stray .rumin!
+                let mut cur = cwd.clone();
+                let mut root = cwd.clone();
+                while let Some(parent) = cur.parent() {
+                    // Do not ascend above HOME directory
+                    if let Some(home) = std::env::var_os("HOME") {
+                        if cur == std::path::Path::new(&home) {
+                            break;
+                        }
+                    }
+                    if parent.join(".git").exists() {
+                        root = parent.to_path_buf();
+                        break;
+                    }
+                    cur = parent.to_path_buf();
+                }
+                root.canonicalize().unwrap_or(root)
             }
         }
-        root.canonicalize().unwrap_or(root)
     } else {
         cli.repo_path.canonicalize().unwrap_or(cli.repo_path)
     };
@@ -270,13 +356,17 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("sidecar/worker.py")));
 
-        let shared_locations = [
-            PathBuf::from("/home/dilb/.local/share/ai-rumin/sidecar/worker.py"),
-            PathBuf::from("/usr/local/share/ai-rumin/sidecar/worker.py"),
-            PathBuf::from("/home/dilb/dev/air-mem/ai-rumin/sidecar/worker.py"),
-            PathBuf::from("sidecar/worker.py"),
-            repo_root.join("sidecar/worker.py"),
-        ];
+        let xdg_data = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+        let mut shared_locations = Vec::new();
+        if let Some(xdg) = xdg_data {
+            shared_locations.push(xdg.join("ai-rumin/sidecar/worker.py"));
+        }
+        shared_locations.push(PathBuf::from("/usr/local/share/ai-rumin/sidecar/worker.py"));
+        shared_locations.push(PathBuf::from("/usr/share/ai-rumin/sidecar/worker.py"));
+        shared_locations.push(PathBuf::from("sidecar/worker.py"));
+        shared_locations.push(repo_root.join("sidecar/worker.py"));
 
         if let Some(ref p) = exe_sidecar {
             if p.exists() {
@@ -327,13 +417,14 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Some(Commands::Digest) => {
+            eprintln!("🔍 Analyzing codebase at: {}", repo_root.display());
             let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
             let stats = graph.summary_stats();
             println!("{}", serde_json::to_string_pretty(&stats)?);
             Ok(())
         }
 
-        Some(Commands::Sync { force }) => {
+        Some(Commands::Sync { force, file }) => {
             let default_cp = repo_root.join(".rumin/checkpoints/default.bin");
             let mut graph = if !force && default_cp.exists() {
                 CodeGraph::load_binary_checkpoint(&default_cp).unwrap_or_else(|_| CodeGraph::new())
@@ -342,6 +433,12 @@ async fn main() -> anyhow::Result<()> {
             };
             let sidecar = SidecarClient::new(&sidecar_script);
             let indexer = Indexer::new(&repo_root);
+
+            if let Some(ref single_file) = file {
+                let report = indexer.sync_single_file(single_file, &mut graph, &sidecar).await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(());
+            }
 
             let stats = indexer.sync_repository(&mut graph, &sidecar, force).await?;
             if let Ok(db) = MemoryDb::open(&repo_root) {
@@ -653,19 +750,88 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Some(Commands::Query { query, budget }) => {
+        Some(Commands::Query { query, budget, types, path_prefix, dampen_hubs }) => {
             let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
 
+            let type_vec = types.map(|t| t.split(',').map(|s| s.trim().to_string()).collect());
             let engine = HippocampalEngine::default();
             let context_budget = ContextBudget {
                 total_token_limit: budget,
                 max_symbols: 10,
                 include_signatures: true,
                 expand_bodies: false,
+                types: type_vec,
+                path_prefix,
+                dampen_hubs,
             };
 
             let res = engine.query(&graph, &query, &context_budget);
             println!("{}", res.formatted_context);
+            Ok(())
+        }
+
+        Some(Commands::Impact { symbol, depth }) => {
+            let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
+            let report = graph.impact_analysis(&symbol, depth);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+
+        Some(Commands::Describe { entity_name }) => {
+            let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
+            match graph.describe_entity(&entity_name) {
+                Some(desc) => {
+                    println!("{}", serde_json::to_string_pretty(&desc)?);
+                }
+                None => {
+                    eprintln!("Error: Entity '{}' not found in code graph", entity_name);
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
+
+        Some(Commands::FindPath { source, target, max_depth }) => {
+            let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
+            let paths = graph.find_paths(&source, &target, max_depth);
+            println!("{}", serde_json::to_string_pretty(&paths)?);
+            Ok(())
+        }
+
+        Some(Commands::AuditLimits) => {
+            let graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
+            let violations = graph.audit_governor_limits(&repo_root);
+            println!("{}", serde_json::to_string_pretty(&violations)?);
+            Ok(())
+        }
+
+        Some(Commands::Federate { repo_path, alias }) => {
+            let mut graph = load_or_sync_graph(&repo_root, &sidecar_script).await?;
+            let other_path = repo_path.canonicalize().unwrap_or(repo_path);
+            if !other_path.exists() || !other_path.is_dir() {
+                eprintln!("Error: Target repository path {:?} does not exist or is not a directory", other_path);
+                std::process::exit(1);
+            }
+            let default_cp = other_path.join(".rumin/checkpoints/default.bin");
+            let other_graph = if default_cp.exists() {
+                CodeGraph::load_binary_checkpoint(&default_cp).unwrap_or_default()
+            } else {
+                let sidecar = SidecarClient::new(&sidecar_script);
+                let indexer = Indexer::new(&other_path);
+                let mut g = CodeGraph::new();
+                let _ = indexer.sync_repository(&mut g, &sidecar, false).await;
+                g
+            };
+
+            let added_count = graph.federate_graph(&other_graph, &alias);
+            let default_cp = repo_root.join(".rumin/checkpoints/default.bin");
+            if let Some(parent) = default_cp.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = graph.save_binary_checkpoint(&default_cp);
+
+            println!("✅ Successfully federated repository {:?} (alias '{}'): merged {} nodes. Total nodes: {}",
+                other_path, alias, added_count, graph.node_count());
             Ok(())
         }
 

@@ -1,0 +1,1 @@
+{"name":"rumin_add_working_note","description":"Append a scratchpad working note or intermediate task state to a session.","parameters":{"properties":{"content":{"description":"Note content or intermediate findings","type":"string"},"session_id":{"description":"Target session ID","type":"string"}},"required":["session_id","content"],"type":"object"}}

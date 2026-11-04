@@ -1,5 +1,7 @@
+use crate::config::RuminConfig;
 use crate::graph::CodeGraph;
 use crate::sidecar::SidecarClient;
+use crate::types::{CodeEntity, EdgeKind, EntityType};
 use crate::parsers;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -10,6 +12,22 @@ use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use walkdir::WalkDir;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeclarativeBridge {
+    pub source: String,
+    pub target: String,
+    #[serde(default)]
+    pub r#type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeclarativeBridgesConfig {
+    #[serde(default)]
+    pub semantic_bridges: Vec<DeclarativeBridge>,
+    #[serde(default)]
+    pub csv_files: Vec<String>,
+}
 
 pub struct Indexer {
     repo_root: PathBuf,
@@ -29,6 +47,46 @@ impl Indexer {
     #[inline]
     pub fn is_binary_file(path: &Path) -> bool {
         parsers::is_binary_file(path)
+    }
+
+    #[inline]
+    pub fn is_supported_file(file_name: &str, extension: &str) -> bool {
+        Self::is_supported_file_path(Path::new(file_name), extension)
+    }
+
+    #[inline]
+    pub fn is_supported_file_path(path: &Path, extension: &str) -> bool {
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let path_str = path.to_string_lossy();
+        if file_name == "Makefile" || file_name == "GNUmakefile" || file_name == "rebar.config" {
+            return true;
+        }
+        if parsers::is_supported_json_file(file_name) {
+            return true;
+        }
+        if parsers::is_supported_yaml_file(&path_str, file_name) {
+            return true;
+        }
+        if file_name.ends_with(".app.src") {
+            return true;
+        }
+        if file_name.ends_with("-meta.xml") {
+            return true;
+        }
+        if extension.is_empty() {
+            return true;
+        }
+        matches!(
+            extension,
+            "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+                | "go" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hxx"
+                | "java" | "cls" | "trigger" | "object" | "field" | "soql"
+                | "erl" | "hrl" | "escript" | "cmp" | "evt" | "intf" | "app" | "page" | "component"
+                | "xml" | "xsd" | "pom" | "html" | "htm"
+                | "sql" | "pls" | "pks" | "pkb" | "prc" | "fnc" | "trg"
+                | "sh" | "bash" | "zsh" | "mk"
+                | "vb" | "vba" | "bas" | "frm" | "ctl" | "vbs"
+        )
     }
 
     #[inline]
@@ -127,6 +185,26 @@ impl Indexer {
     }
 
     #[inline]
+    pub fn is_supported_json_file(file_name: &str) -> bool {
+        parsers::is_supported_json_file(file_name)
+    }
+
+    #[inline]
+    pub fn parse_json_manifest(rel_path: &str, content: &str, graph: &mut CodeGraph) {
+        parsers::parse_json_manifest(rel_path, content, graph);
+    }
+
+    #[inline]
+    pub fn is_supported_yaml_file(rel_path: &str, file_name: &str) -> bool {
+        parsers::is_supported_yaml_file(rel_path, file_name)
+    }
+
+    #[inline]
+    pub fn parse_yaml_manifest(rel_path: &str, content: &str, graph: &mut CodeGraph) {
+        parsers::parse_yaml_manifest(rel_path, content, graph);
+    }
+
+    #[inline]
     pub fn is_apigee_file(path: &Path, content: &str) -> bool {
         parsers::is_apigee_file(path, content)
     }
@@ -151,6 +229,16 @@ impl Indexer {
         parsers::parse_generic_source(rel_path, content, lang, graph);
     }
 
+    #[inline]
+    pub fn is_vb_cls(content: &str) -> bool {
+        parsers::is_vb_cls(content)
+    }
+
+    #[inline]
+    pub fn parse_vb(rel_path: &str, content: &str, graph: &mut CodeGraph) {
+        parsers::parse_vb(rel_path, content, graph);
+    }
+
     /// Index a single file, routing to the appropriate language parser or sidecar.
     pub async fn index_single_file(
         repo_root: &Path,
@@ -167,13 +255,17 @@ impl Indexer {
             Err(_) => path.to_string_lossy().to_string(),
         };
 
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        if !Self::is_supported_file_path(path, extension) {
+            return Ok(false);
+        }
+
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => return Ok(false),
         };
-
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // 1. Check for Makefiles
         if file_name == "Makefile" || file_name == "GNUmakefile" || extension == "mk" {
@@ -183,21 +275,7 @@ impl Indexer {
 
         // 2. Check for SQL & PL/SQL files
         if matches!(extension, "sql" | "pls" | "pks" | "pkb" | "prc" | "fnc" | "trg") {
-            let dialect = if matches!(extension, "pls" | "pks" | "pkb" | "prc" | "fnc" | "trg") {
-                Some("oracle")
-            } else {
-                None
-            };
-            match sidecar.parse_sql(&rel_path, &content, dialect).await {
-                Ok(entities) => {
-                    for ent in entities {
-                        graph.add_entity(ent);
-                    }
-                }
-                Err(err) => {
-                    debug!("Sidecar SQL parse fallback for {}: {}", rel_path, err);
-                }
-            }
+            crate::parsers::parse_plsql(&rel_path, &content, graph);
             return Ok(true);
         }
 
@@ -236,12 +314,28 @@ impl Indexer {
             Self::parse_java(&rel_path, &content, graph);
             Ok(true)
         } else if matches!(extension, "cls") {
-            Self::parse_apex_class(&rel_path, &content, graph);
+            if Self::is_vb_cls(&content) {
+                Self::parse_vb(&rel_path, &content, graph);
+            } else {
+                Self::parse_apex_class(&rel_path, &content, graph);
+            }
+            Ok(true)
+        } else if matches!(extension, "vb" | "vba" | "bas" | "frm" | "ctl" | "vbs") {
+            Self::parse_vb(&rel_path, &content, graph);
             Ok(true)
         } else if matches!(extension, "trigger") {
             Self::parse_apex_trigger(&rel_path, &content, graph);
             Ok(true)
-        } else if file_name.ends_with(".object-meta.xml") || file_name.ends_with(".field-meta.xml") || matches!(extension, "object" | "field") {
+        } else if file_name.ends_with(".oip-meta.xml") || file_name.ends_with(".os-meta.xml") || file_name.ends_with(".ouc-meta.xml") {
+            parsers::parse_omnistudio_metadata(&rel_path, &content, graph);
+            Ok(true)
+        } else if file_name.ends_with(".approvalProcess-meta.xml") {
+            parsers::parse_approval_process(&rel_path, &content, graph);
+            Ok(true)
+        } else if file_name.ends_with(".decisionMatrix-meta.xml") {
+            parsers::parse_decision_matrix(&rel_path, &content, graph);
+            Ok(true)
+        } else if file_name.ends_with("-meta.xml") || matches!(extension, "object" | "field") {
             Self::parse_salesforce_metadata(&rel_path, &content, graph);
             Ok(true)
         } else if matches!(extension, "soql") {
@@ -256,7 +350,7 @@ impl Indexer {
         } else if file_name == "rebar.config" {
             Self::parse_rebar_config(&rel_path, &content, graph);
             Ok(true)
-        } else if matches!(extension, "cmp" | "evt" | "intf") {
+        } else if matches!(extension, "cmp" | "evt" | "intf" | "page" | "component") {
             Self::parse_aura(&rel_path, &content, graph);
             Ok(true)
         } else if matches!(extension, "app") {
@@ -282,6 +376,14 @@ impl Indexer {
         } else if matches!(extension, "py") || shebang == Some("python") {
             Self::parse_python(&rel_path, &content, graph);
             Ok(true)
+        } else if parsers::is_supported_json_file(file_name) {
+            Self::parse_json_manifest(&rel_path, &content, graph);
+            Ok(true)
+        } else if parsers::is_supported_yaml_file(&rel_path, file_name)
+            || (matches!(extension, "yaml" | "yml") && parsers::is_supported_yaml_content(&content))
+        {
+            Self::parse_yaml_manifest(&rel_path, &content, graph);
+            Ok(true)
         } else {
             Ok(false)
         }
@@ -304,12 +406,38 @@ impl Indexer {
         let mut delta = SyncDelta::default();
         let mut seen_paths: HashSet<String> = HashSet::new();
 
-        let walker = WalkDir::new(&self.repo_root).into_iter().filter_entry(|e| {
+        let config = RuminConfig::load(&self.repo_root);
+        let mut ignore_patterns = config.ignored_patterns;
+        let ignore_path = self.repo_root.join(RuminConfig::IGNORE_FILE);
+        if let Ok(content) = std::fs::read_to_string(&ignore_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    let pat = trimmed.trim_end_matches('/');
+                    if !pat.is_empty() {
+                        ignore_patterns.push(pat.to_string());
+                    }
+                }
+            }
+        }
+
+        let ignore_filter = ignore_patterns.clone();
+        let walker = WalkDir::new(&self.repo_root).into_iter().filter_entry(move |e| {
             let name = e.file_name().to_string_lossy();
-            !matches!(
+            if matches!(
                 name.as_ref(),
                 ".git" | "target" | "node_modules" | "venv" | ".venv" | "__pycache__" | ".aimem" | ".cargo" | ".rumin" | "build" | "dist" | "out" | "vendor" | ".next" | "coverage" | ".pytest_cache" | ".mypy_cache" | ".tox" | "tmp" | ".tmp"
-            )
+            ) {
+                return false;
+            }
+            if let Ok(meta) = e.metadata() {
+                if meta.is_symlink() && !e.path().exists() {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+            !ignore_filter.iter().any(|pat| name == pat.as_str())
         });
 
         for entry in walker.filter_map(|e| e.ok()) {
@@ -320,6 +448,11 @@ impl Indexer {
             }
 
             let path = entry.path();
+            let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !Self::is_supported_file_path(path, extension) {
+                continue;
+            }
+
             if !path.is_file() || Self::is_binary_file(path) {
                 continue;
             }
@@ -339,6 +472,20 @@ impl Indexer {
                 Ok(p) => p.to_string_lossy().to_string(),
                 Err(_) => path.to_string_lossy().to_string(),
             };
+
+            let is_ignored = ignore_patterns.iter().any(|pat| {
+                if pat.starts_with("*.") {
+                    rel_path.ends_with(&pat[1..])
+                } else {
+                    rel_path == *pat
+                        || rel_path.starts_with(&format!("{}/", pat))
+                        || rel_path.contains(&format!("/{}", pat))
+                }
+            });
+            if is_ignored {
+                continue;
+            }
+
             seen_paths.insert(rel_path.clone());
 
             let mtime_secs = metadata
@@ -439,6 +586,12 @@ impl Indexer {
             ..Default::default()
         };
 
+        let total_work = delta.added.len() + delta.modified.len();
+        if total_work > 0 {
+            info!("Applying delta: {} files to index ({} added, {} modified, {} deleted)",
+                total_work, delta.added.len(), delta.modified.len(), delta.deleted.len());
+        }
+
         // 1. Process deletions
         for rel_path in delta.deleted {
             graph.remove_file(&rel_path);
@@ -446,6 +599,7 @@ impl Indexer {
             stats.deleted += 1;
         }
 
+        let mut processed = 0;
         // 2. Process modifications
         for (rel_path, path, new_record) in delta.modified {
             graph.remove_file(&rel_path);
@@ -453,6 +607,10 @@ impl Indexer {
                 stats.modified += 1;
             }
             manifest.files.insert(rel_path, new_record);
+            processed += 1;
+            if total_work >= 25 && processed % 25 == 0 {
+                info!("Indexing progress: {}/{} files...", processed, total_work);
+            }
         }
 
         // 3. Process additions
@@ -461,6 +619,16 @@ impl Indexer {
                 stats.added += 1;
             }
             manifest.files.insert(rel_path, new_record);
+            processed += 1;
+            if total_work >= 25 && processed % 25 == 0 {
+                info!("Indexing progress: {}/{} files...", processed, total_work);
+            }
+        }
+
+        // 4. Ingest declarative semantic bridges (Layer B)
+        let bridge_count = Self::load_semantic_bridges(&self.repo_root, graph);
+        if bridge_count > 0 {
+            stats.semantic_bridges = Some(bridge_count);
         }
 
         Ok(stats)
@@ -504,6 +672,22 @@ impl Indexer {
 
         stats.total_indexed = graph.node_count();
         stats.duration_ms = start.elapsed().as_millis();
+        stats.manifest_tracked_files = Some(manifest.files.len());
+        let bridge_msg = match stats.semantic_bridges {
+            Some(count) if count > 0 => format!(" (linked {} semantic bridges)", count),
+            _ => String::new(),
+        };
+        stats.status_message = Some(if stats.added == 0 && stats.modified == 0 && stats.deleted == 0 {
+            format!(
+                "Up-to-date: All {} tracked files already match on-disk state (cached via manifest/watcher). Use force=true to re-index.{}",
+                stats.unchanged, bridge_msg
+            )
+        } else {
+            format!(
+                "Synchronized: +{} added, ~{} modified, -{} deleted, {} unchanged.{}",
+                stats.added, stats.modified, stats.deleted, stats.unchanged, bridge_msg
+            )
+        });
 
         info!(
             "Sync completed in {}ms: +{} added, ~{} modified, -{} deleted, {} unchanged",
@@ -511,6 +695,307 @@ impl Indexer {
         );
         Ok(stats)
     }
+
+    /// Surgically re-index a single file in sub-50ms (Gap 13).
+    pub async fn sync_single_file(
+        &self,
+        file_path: &Path,
+        graph: &mut CodeGraph,
+        sidecar: &SidecarClient,
+    ) -> Result<SingleFileReport> {
+        let start = std::time::Instant::now();
+        let abs_path = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else {
+            self.repo_root.join(file_path)
+        };
+
+        let rel_path = match abs_path.strip_prefix(&self.repo_root) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => abs_path.to_string_lossy().to_string(),
+        };
+
+        let manifest_path = self.repo_root.join(".rumin/manifest.json");
+        let mut manifest = FileManifest::load_or_new(&manifest_path);
+
+        if !abs_path.exists() {
+            // File was deleted
+            graph.remove_file(&rel_path);
+            manifest.files.remove(&rel_path);
+            let _ = manifest.save(&manifest_path);
+            let default_checkpoint = self.repo_root.join(".rumin/checkpoints/default.bin");
+            let _ = graph.save_binary_checkpoint(&default_checkpoint);
+            return Ok(SingleFileReport {
+                file_path: rel_path,
+                action: "deleted".to_string(),
+                entities_count: 0,
+                duration_ms: start.elapsed().as_millis(),
+            });
+        }
+
+        // Remove old entities for this file before re-indexing
+        graph.remove_file(&rel_path);
+
+        let indexed = Self::index_single_file(&self.repo_root, &abs_path, graph, sidecar).await?;
+        let entity_count = graph.file_to_entities.get(&rel_path).map(|v| v.len()).unwrap_or(0);
+
+        if indexed {
+            if let Ok(content) = std::fs::read(&abs_path) {
+                let mut hasher = sha2::Sha256::new();
+                use sha2::Digest;
+                hasher.update(&content);
+                let hash = format!("{:x}", hasher.finalize());
+                let meta = std::fs::metadata(&abs_path)?;
+                let mtime_nanos = meta.modified().map(|m| m.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)).unwrap_or(0);
+                manifest.files.insert(
+                    rel_path.clone(),
+                    ManifestRecord::Full {
+                        mtime_nanos,
+                        size: meta.len(),
+                        hash,
+                    },
+                );
+                let _ = manifest.save(&manifest_path);
+            }
+            let default_checkpoint = self.repo_root.join(".rumin/checkpoints/default.bin");
+            let _ = graph.save_binary_checkpoint(&default_checkpoint);
+        }
+
+        if rel_path.starts_with(".rumin/bridges") || rel_path.starts_with(".rumin/mappings") {
+            Self::load_semantic_bridges(&self.repo_root, graph);
+        }
+
+        Ok(SingleFileReport {
+            file_path: rel_path,
+            action: if indexed { "indexed".to_string() } else { "skipped".to_string() },
+            entities_count: entity_count,
+            duration_ms: start.elapsed().as_millis(),
+        })
+    }
+
+    /// Layer B: Declarative Ingestion Mapping Integration (Cross-Database Semantic Bridges)
+    /// Ingests semantic bridges from `.rumin/bridges.json`, `.rumin/mappings.json`,
+    /// `.rumin/bridges.csv`, `.rumin/mappings.csv`, or any files in `.rumin/bridges/`.
+    pub fn load_semantic_bridges(repo_root: &Path, graph: &mut CodeGraph) -> usize {
+        let mut total_bridges = 0;
+        let rumin_dir = repo_root.join(".rumin");
+        if !rumin_dir.exists() {
+            return 0;
+        }
+
+        // 1. Check direct JSON configuration files (.rumin/bridges.json, .rumin/mappings.json)
+        let json_candidates = ["bridges.json", "mappings.json"];
+        for candidate in &json_candidates {
+            let json_path = rumin_dir.join(candidate);
+            if json_path.is_file() {
+                total_bridges += Self::load_json_bridges(&json_path, repo_root, graph);
+            }
+        }
+
+        // 2. Check direct CSV mapping files (.rumin/bridges.csv, .rumin/mappings.csv)
+        let csv_candidates = ["bridges.csv", "mappings.csv"];
+        for candidate in &csv_candidates {
+            let csv_path = rumin_dir.join(candidate);
+            if csv_path.is_file() {
+                total_bridges += Self::parse_csv_bridges(&csv_path, graph);
+            }
+        }
+
+        // 3. Scan .rumin/bridges/ and .rumin/mappings/ directories if present
+        for sub in &["bridges", "mappings"] {
+            let sub_dir = rumin_dir.join(sub);
+            if sub_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(sub_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                if ext.eq_ignore_ascii_case("json") {
+                                    total_bridges += Self::load_json_bridges(&path, repo_root, graph);
+                                } else if ext.eq_ignore_ascii_case("csv") {
+                                    total_bridges += Self::parse_csv_bridges(&path, graph);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if total_bridges > 0 {
+            info!("Loaded {} declarative semantic bridges into knowledge graph", total_bridges);
+        }
+        total_bridges
+    }
+
+    fn load_json_bridges(path: &Path, repo_root: &Path, graph: &mut CodeGraph) -> usize {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+
+        let rel_path = path.strip_prefix(repo_root).unwrap_or(path).to_string_lossy().to_string();
+        let mut count = 0;
+
+        // Try parsing as DeclarativeBridgesConfig { semantic_bridges: [...], csv_files: [...] }
+        if let Ok(config) = serde_json::from_str::<DeclarativeBridgesConfig>(&content) {
+            for bridge in config.semantic_bridges {
+                if Self::inject_semantic_bridge(&bridge.source, &bridge.target, bridge.r#type.as_deref(), &rel_path, graph) {
+                    count += 1;
+                }
+            }
+            for csv_rel in config.csv_files {
+                let csv_path = repo_root.join(csv_rel);
+                if csv_path.is_file() {
+                    count += Self::parse_csv_bridges(&csv_path, graph);
+                }
+            }
+            return count;
+        }
+
+        // Fallback: try parsing directly as Vec<DeclarativeBridge>
+        if let Ok(bridges) = serde_json::from_str::<Vec<DeclarativeBridge>>(&content) {
+            for bridge in bridges {
+                if Self::inject_semantic_bridge(&bridge.source, &bridge.target, bridge.r#type.as_deref(), &rel_path, graph) {
+                    count += 1;
+                }
+            }
+            return count;
+        }
+
+        count
+    }
+
+    pub fn inject_semantic_bridge(
+        source: &str,
+        target: &str,
+        bridge_type: Option<&str>,
+        rel_path: &str,
+        graph: &mut CodeGraph,
+    ) -> bool {
+        let src = source.trim();
+        let tgt = target.trim();
+        if src.is_empty() || tgt.is_empty() || src == tgt {
+            return false;
+        }
+
+        let btype = bridge_type.unwrap_or("ETL_MAPPING");
+
+        // 1. Ensure source entity exists
+        if graph.get_entity(src).is_none() {
+            let mut src_ent = CodeEntity::new(src, src, EntityType::Table, rel_path, 1, 1);
+            src_ent.signature = Some(format!("Bridge Table {}", src));
+            src_ent.metadata.insert("bridge_type".to_string(), btype.to_string());
+            graph.add_entity(src_ent);
+        }
+
+        // 2. Ensure target entity exists
+        if graph.get_entity(tgt).is_none() {
+            let mut tgt_ent = CodeEntity::new(tgt, tgt, EntityType::Table, rel_path, 1, 1);
+            tgt_ent.signature = Some(format!("Bridge Table {}", tgt));
+            tgt_ent.metadata.insert("bridge_type".to_string(), btype.to_string());
+            graph.add_entity(tgt_ent);
+        }
+
+        // 3. Inject bidirectional semantic bridge edges
+        graph.add_edge(src, tgt, EdgeKind::SemanticBridge);
+        graph.add_edge(tgt, src, EdgeKind::SemanticBridge);
+
+        true
+    }
+
+    pub fn parse_csv_bridges(path: &Path, graph: &mut CodeGraph) -> usize {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+
+        let file_name = path.to_string_lossy().to_string();
+        let mut lines = content.lines();
+        let header_line = match lines.next() {
+            Some(h) => h,
+            None => return 0,
+        };
+
+        let headers: Vec<String> = header_line
+            .split(',')
+            .map(|h| h.trim().trim_matches('"').trim_matches('\'').to_ascii_uppercase())
+            .collect();
+
+        if headers.is_empty() {
+            return 0;
+        }
+
+        // Detect source and target column indices
+        let mut src_col: Option<usize> = None;
+        let mut tgt_col: Option<usize> = None;
+        let mut type_col: Option<usize> = None;
+
+        for (idx, h) in headers.iter().enumerate() {
+            match h.as_str() {
+                "SOURCE" | "SOURCE_SYMBOL" | "SOURCE_TABLE" | "SOURCE_ENTITY" | "FROM"
+                | "CATALIST_ROW_ID" | "CATALIST_PART_NUM" | "SIEBEL_TABLE" => {
+                    if src_col.is_none() {
+                        src_col = Some(idx);
+                    }
+                }
+                "TARGET" | "TARGET_SYMBOL" | "TARGET_SOBJECT" | "TARGET_ENTITY" | "TO"
+                | "SF_PRODUCT_CODE" | "SF_GLOBAL_KEY" | "SF_SOBJECT" | "SF_PRODUCT_NAME" => {
+                    if tgt_col.is_none() {
+                        tgt_col = Some(idx);
+                    }
+                }
+                "TYPE" | "BRIDGE_TYPE" | "MAPPING_TYPE" | "ACTION" | "MIGRATION_ACTION" => {
+                    if type_col.is_none() {
+                        type_col = Some(idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Fallback if headers were not recognized: col 0 = source, col 1 = target (if >= 2 columns)
+        let src_idx = src_col.unwrap_or(0);
+        let tgt_idx = tgt_col.unwrap_or_else(|| if headers.len() > 1 { 1 } else { 0 });
+
+        if src_idx == tgt_idx {
+            return 0;
+        }
+
+        let mut count = 0;
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.split(',').collect();
+            if parts.len() > src_idx && parts.len() > tgt_idx {
+                let src_val = parts[src_idx].trim().trim_matches('"').trim_matches('\'');
+                let tgt_val = parts[tgt_idx].trim().trim_matches('"').trim_matches('\'');
+                let type_val = type_col
+                    .and_then(|c| parts.get(c))
+                    .map(|t| t.trim().trim_matches('"').trim_matches('\''));
+
+                if !src_val.is_empty() && !tgt_val.is_empty() {
+                    if Self::inject_semantic_bridge(src_val, tgt_val, type_val, &file_name, graph) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        count
+    }
+}
+
+/// Single file surgical re-indexing report (Gap 13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SingleFileReport {
+    pub file_path: String,
+    pub action: String,
+    pub entities_count: usize,
+    pub duration_ms: u128,
 }
 
 /// Delta computed during repository scan.
@@ -531,6 +1016,12 @@ pub struct SyncStats {
     pub unchanged: usize,
     pub total_indexed: usize,
     pub duration_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_tracked_files: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_bridges: Option<usize>,
 }
 
 /// Manifest record supporting both legacy format and versioned metadata.

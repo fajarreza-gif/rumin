@@ -1,0 +1,1 @@
+{"name":"rumin_switch_repo","description":"Dynamically switch active repository root, re-initializing memory database, checkpoints, and graph.","parameters":{"properties":{"repo_path":{"description":"Absolute path to target repository directory","type":"string"}},"required":["repo_path"],"type":"object"}}

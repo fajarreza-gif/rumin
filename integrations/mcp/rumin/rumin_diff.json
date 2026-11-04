@@ -1,0 +1,1 @@
+{"name":"rumin_diff","description":"Compute topological delta (added, modified, removed entities and edges) against a checkpoint.","parameters":{"properties":{"checkpoint_path":{"description":"Checkpoint file path to diff against","type":"string"}},"type":"object"}}

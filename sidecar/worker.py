@@ -63,15 +63,15 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
     lines = content.splitlines()
 
     table_view_re = re.compile(
-        r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FORCE\s+)?(?:EDITIONABLE\s+)?(TABLE|VIEW|MATERIALIZED\s+VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?([`\"']?(\w+)[`\"']?)",
+        r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FORCE\s+)?(?:EDITIONABLE\s+)?(TABLE|VIEW|MATERIALIZED\s+VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?",
         re.I
     )
-    package_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?PACKAGE\s+(?:BODY\s+)?([`\"']?(\w+)[`\"']?)", re.I)
-    proc_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE\s+([`\"']?(\w+)[`\"']?)", re.I)
-    func_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([`\"']?(\w+)[`\"']?)", re.I)
-    trigger_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([`\"']?(\w+)[`\"']?)", re.I)
-    type_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?TYPE\s+(?:BODY\s+)?([`\"']?(\w+)[`\"']?)", re.I)
-    seq_re = re.compile(r"CREATE\s+SEQUENCE\s+([`\"']?(\w+)[`\"']?)", re.I)
+    package_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?PACKAGE\s+(?:BODY\s+)?(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?", re.I)
+    proc_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE\s+(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?", re.I)
+    func_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?", re.I)
+    trigger_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?", re.I)
+    type_re = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?TYPE\s+(?:BODY\s+)?(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?", re.I)
+    seq_re = re.compile(r"CREATE\s+SEQUENCE\s+(?:[`\"']?([a-zA-Z0-9_#$]+)[`\"']?\.)?[`\"']?([a-zA-Z0-9_#$]+)[`\"']?", re.I)
 
     member_proc_re = re.compile(r"^\s*PROCEDURE\s+([a-zA-Z0-9_#$]+)\s*(?:\(|$)", re.I)
     member_func_re = re.compile(r"^\s*FUNCTION\s+([a-zA-Z0-9_#$]+)\s*(?:\(|$)", re.I)
@@ -86,7 +86,7 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         # Package detection (PL/SQL)
         pkg_match = package_re.search(line)
         if pkg_match:
-            pkg_name = pkg_match.group(1)
+            pkg_name = f"{pkg_match.group(1)}.{pkg_match.group(2)}" if pkg_match.group(1) else pkg_match.group(2)
             current_package = pkg_name
             ent_id = f"{file_path}::pkg::{pkg_name}"
             if ent_id not in seen_ids:
@@ -107,7 +107,7 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         # Standalone Procedure (PL/SQL)
         proc_match = proc_re.search(line)
         if proc_match:
-            proc_name = proc_match.group(1)
+            proc_name = f"{proc_match.group(1)}.{proc_match.group(2)}" if proc_match.group(1) else proc_match.group(2)
             ent_id = f"{file_path}::{proc_name}"
             if ent_id not in seen_ids:
                 seen_ids.add(ent_id)
@@ -127,7 +127,7 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         # Standalone Function (PL/SQL)
         func_match = func_re.search(line)
         if func_match:
-            func_name = func_match.group(1)
+            func_name = f"{func_match.group(1)}.{func_match.group(2)}" if func_match.group(1) else func_match.group(2)
             ent_id = f"{file_path}::{func_name}"
             if ent_id not in seen_ids:
                 seen_ids.add(ent_id)
@@ -147,7 +147,7 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         # Trigger (PL/SQL)
         trig_match = trigger_re.search(line)
         if trig_match:
-            trig_name = trig_match.group(1)
+            trig_name = f"{trig_match.group(1)}.{trig_match.group(2)}" if trig_match.group(1) else trig_match.group(2)
             ent_id = f"{file_path}::{trig_name}"
             if ent_id not in seen_ids:
                 seen_ids.add(ent_id)
@@ -167,7 +167,7 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         # Object Type (PL/SQL)
         type_match = type_re.search(line)
         if type_match:
-            type_name = type_match.group(1)
+            type_name = f"{type_match.group(1)}.{type_match.group(2)}" if type_match.group(1) else type_match.group(2)
             ent_id = f"{file_path}::{type_name}"
             if ent_id not in seen_ids:
                 seen_ids.add(ent_id)
@@ -187,7 +187,7 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         # Sequence
         seq_match = seq_re.search(line)
         if seq_match:
-            seq_name = seq_match.group(1)
+            seq_name = f"{seq_match.group(1)}.{seq_match.group(2)}" if seq_match.group(1) else seq_match.group(2)
             ent_id = f"{file_path}::{seq_name}"
             if ent_id not in seen_ids:
                 seen_ids.add(ent_id)
@@ -208,8 +208,10 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
         tv_match = table_view_re.search(line)
         if tv_match:
             kind_str = tv_match.group(1).lower()
-            table_name = tv_match.group(2)
-            ent_id = f"{file_path}::{table_name}"
+            schema = tv_match.group(2)
+            raw_table = tv_match.group(3)
+            table_name = raw_table
+            ent_id = f"{file_path}::{raw_table}"
             if ent_id not in seen_ids:
                 seen_ids.add(ent_id)
                 entities.append({
@@ -221,8 +223,31 @@ def extract_sql_entities(file_path: str, content: str, dialect: str = None) -> L
                     "line_end": line_idx,
                     "signature": trimmed,
                     "docstring": None,
-                    "metadata": {"dialect": dialect or "generic"}
+                    "metadata": {
+                        "dialect": dialect or "generic",
+                        "schema": schema,
+                        "qualified_name": f"{schema}.{raw_table}" if schema else raw_table,
+                    }
                 })
+                if schema:
+                    alias_id = f"{schema}.{raw_table}"
+                    if alias_id not in seen_ids:
+                        seen_ids.add(alias_id)
+                        entities.append({
+                            "id": alias_id,
+                            "name": alias_id,
+                            "entity_type": "view" if "view" in kind_str else "table",
+                            "file_path": file_path,
+                            "line_start": line_idx,
+                            "line_end": line_idx,
+                            "signature": trimmed,
+                            "docstring": None,
+                            "metadata": {
+                                "dialect": dialect or "generic",
+                                "schema": schema,
+                                "is_alias_for": ent_id,
+                            }
+                        })
             continue
 
         # Member procedure inside a package
@@ -686,7 +711,7 @@ def extract_erlang_entities(file_path: str, content: str) -> List[Dict[str, Any]
                     "line_end": line_idx,
                     "signature": stripped,
                     "docstring": None,
-                    "metadata": {"module": current_module, "arity": arity, "language": "erlang"}
+                    "metadata": {"module": current_module, "arity": str(arity), "language": "erlang"}
                 })
 
     return entities
@@ -893,6 +918,239 @@ def extract_apigee_entities(file_path: str, content: str) -> List[Dict[str, Any]
     return entities
 
 
+def extract_vb_entities(file_path: str, content: str) -> List[Dict[str, Any]]:
+    """Extract AST entities from Visual Basic, VBA, and VBScript source code."""
+    entities = []
+    lines = content.splitlines()
+    total_lines = max(1, len(lines))
+    ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    module_name = base_name
+
+    for line in lines[:50]:
+        m = re.match(r'^\s*Attribute\s+VB_Name\s*=\s*"([^"]+)"', line, re.IGNORECASE)
+        if m:
+            module_name = m.group(1)
+            break
+
+    dialect = "vb.net" if ext == "vb" else ("vbscript" if ext == "vbs" else ("vb6/form" if ext == "frm" else "vba"))
+
+    entities.append({
+        "id": f"{file_path}::file",
+        "name": file_path,
+        "entity_type": "module",
+        "file_path": file_path,
+        "line_start": 1,
+        "line_end": total_lines,
+        "signature": f"file {file_path}",
+        "docstring": None,
+        "metadata": {"dialect": dialect}
+    })
+
+    if ext != "vb":
+        root_type = "class" if ext == "cls" else "module"
+        entities.append({
+            "id": f"{file_path}::{module_name}",
+            "name": module_name,
+            "entity_type": root_type,
+            "file_path": file_path,
+            "line_start": 1,
+            "line_end": total_lines,
+            "signature": f"{root_type.capitalize()} {module_name}",
+            "docstring": None,
+            "metadata": {"dialect": dialect}
+        })
+
+    sub_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Protected|Shared|Static|Overrides|Overridable|MustOverride|Async|Default)\s+)*Sub\s+([a-zA-Z0-9_]+)\s*(?:\((.*?)\))?', re.IGNORECASE)
+    func_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Protected|Shared|Static|Overrides|Overridable|MustOverride|Async)\s+)*Function\s+([a-zA-Z0-9_]+)\s*(?:\((.*?)\))?(?:\s+As\s+([a-zA-Z0-9_\.\(\)]+))?', re.IGNORECASE)
+    prop_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Protected|Shared|Overrides|Overridable|ReadOnly|WriteOnly|Default)\s+)*Property\s+(?:(Get|Let|Set)\s+)?([a-zA-Z0-9_]+)', re.IGNORECASE)
+    class_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Protected|Partial|MustInherit|NotInheritable|Static)\s+)*Class\s+([a-zA-Z0-9_]+)', re.IGNORECASE)
+    mod_re = re.compile(r'^\s*(?:(?:Public|Friend|Private)\s+)?Module\s+([a-zA-Z0-9_]+)', re.IGNORECASE)
+    iface_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Protected)\s+)*Interface\s+([a-zA-Z0-9_]+)', re.IGNORECASE)
+    struct_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Protected)\s+)*Structure\s+([a-zA-Z0-9_]+)', re.IGNORECASE)
+    type_re = re.compile(r'^\s*(?:(?:Public|Private|Friend|Global)\s+)*Type\s+([a-zA-Z0-9_]+)', re.IGNORECASE)
+    enum_re = re.compile(r'^\s*(?:(?:Public|Private|Friend)\s+)*Enum\s+([a-zA-Z0-9_]+)', re.IGNORECASE)
+    declare_re = re.compile(r'^\s*(?:(?:Public|Private)\s+)?Declare\s+(?:PtrSafe\s+)?(Sub|Function)\s+([a-zA-Z0-9_]+)\s+Lib\s+"([^"]+)"', re.IGNORECASE)
+    com_re = re.compile(r'(?:CreateObject|GetObject|WScript\.CreateObject)\s*\(\s*"([a-zA-Z0-9_\.]+)"\s*\)', re.IGNORECASE)
+
+    current_container = module_name
+
+    for idx, line in enumerate(lines):
+        line_num = idx + 1
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith("'") or trimmed.lower().startswith("rem "):
+            continue
+
+        m = class_re.match(trimmed)
+        if m:
+            cls_name = m.group(1)
+            current_container = cls_name
+            entities.append({
+                "id": f"{file_path}::class::{cls_name}",
+                "name": cls_name,
+                "entity_type": "class",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {}
+            })
+            continue
+
+        m = mod_re.match(trimmed)
+        if m:
+            mod_n = m.group(1)
+            current_container = mod_n
+            entities.append({
+                "id": f"{file_path}::module::{mod_n}",
+                "name": mod_n,
+                "entity_type": "module",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {}
+            })
+            continue
+
+        m = iface_re.match(trimmed)
+        if m:
+            iface_n = m.group(1)
+            entities.append({
+                "id": f"{file_path}::interface::{iface_n}",
+                "name": iface_n,
+                "entity_type": "interface",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {}
+            })
+            continue
+
+        m = struct_re.match(trimmed) or type_re.match(trimmed)
+        if m:
+            st_name = m.group(1)
+            entities.append({
+                "id": f"{file_path}::struct::{st_name}",
+                "name": st_name,
+                "entity_type": "struct",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {}
+            })
+            continue
+
+        m = enum_re.match(trimmed)
+        if m:
+            en_name = m.group(1)
+            entities.append({
+                "id": f"{file_path}::enum::{en_name}",
+                "name": en_name,
+                "entity_type": "struct",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {"kind": "enum"}
+            })
+            continue
+
+        m = declare_re.match(trimmed)
+        if m:
+            decl_name = m.group(2)
+            lib_name = m.group(3)
+            entities.append({
+                "id": f"{file_path}::{current_container}::{decl_name}",
+                "name": decl_name,
+                "entity_type": "function",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {"is_declare": "true", "dll": lib_name}
+            })
+            continue
+
+        m = sub_re.match(trimmed)
+        if m:
+            sub_name = m.group(1)
+            params = m.group(2) or ""
+            entities.append({
+                "id": f"{file_path}::{current_container}::{sub_name}",
+                "name": sub_name,
+                "entity_type": "method",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {"parameters": params}
+            })
+            continue
+
+        m = func_re.match(trimmed)
+        if m:
+            func_name = m.group(1)
+            params = m.group(2) or ""
+            ret_type = m.group(3) or "Variant"
+            entities.append({
+                "id": f"{file_path}::{current_container}::{func_name}",
+                "name": func_name,
+                "entity_type": "function",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {"parameters": params, "return_type": ret_type}
+            })
+            continue
+
+        m = prop_re.match(trimmed)
+        if m:
+            prop_kind = m.group(1) or "Standard"
+            prop_name = m.group(2)
+            entities.append({
+                "id": f"{file_path}::{current_container}::{prop_kind}::{prop_name}",
+                "name": prop_name,
+                "entity_type": "method",
+                "file_path": file_path,
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": trimmed,
+                "docstring": None,
+                "metadata": {"property_kind": prop_kind}
+            })
+            continue
+
+        m = com_re.search(trimmed)
+        if m:
+            prog_id = m.group(1)
+            entities.append({
+                "id": f"com::{prog_id}",
+                "name": prog_id,
+                "entity_type": "module",
+                "file_path": "<com-activex>",
+                "line_start": line_num,
+                "line_end": line_num,
+                "signature": f"COM Component {prog_id}",
+                "docstring": None,
+                "metadata": {"prog_id": prog_id}
+            })
+
+    return entities
+
+
 def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
     method = req.get("method")
     params = req.get("params", {})
@@ -942,6 +1200,12 @@ def handle_request(req: Dict[str, Any]) -> Dict[str, Any]:
         file_path = params.get("file_path", "unknown.xml")
         content = params.get("content", "")
         entities = extract_apigee_entities(file_path, content)
+        return {"id": req_id, "result": {"entities": entities}, "error": None}
+
+    elif method == "parse_vb":
+        file_path = params.get("file_path", "unknown.vb")
+        content = params.get("content", "")
+        entities = extract_vb_entities(file_path, content)
         return {"id": req_id, "result": {"entities": entities}, "error": None}
 
     else:

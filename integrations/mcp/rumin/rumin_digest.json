@@ -1,0 +1,1 @@
+{"name":"rumin_digest","description":"Return topological architectural digest and scale metrics of the codebase.","parameters":{"properties":{},"type":"object"}}

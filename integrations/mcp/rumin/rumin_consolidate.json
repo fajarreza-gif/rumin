@@ -1,0 +1,1 @@
+{"name":"rumin_consolidate","description":"Execute algorithmic memory consolidation (sleep phase): prunes dead transient nodes and builds distilled multi-hop shortcuts.","parameters":{"properties":{},"type":"object"}}

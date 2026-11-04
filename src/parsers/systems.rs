@@ -2,13 +2,24 @@ use crate::graph::CodeGraph;
 use crate::types::{CodeEntity, EdgeKind, EntityType};
 use regex::Regex;
 
-/// Parse Go source files into packages, standalone functions, receiver methods, structs, and interfaces.
+/// Parse Go source files into packages, standalone functions, receiver methods, structs, interfaces, and imports.
 pub fn parse_go(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let pkg_re = Regex::new(r"^\s*package\s+([a-zA-Z0-9_]+)").unwrap();
     let method_re = Regex::new(r"^\s*func\s*\(\s*(?:[a-zA-Z0-9_]+\s+)?\*?([a-zA-Z0-9_]+)\s*\)\s*([a-zA-Z0-9_]+)\s*\(").unwrap();
     let func_re = Regex::new(r"^\s*func\s+([a-zA-Z0-9_]+)\s*\(").unwrap();
     let struct_re = Regex::new(r"^\s*type\s+([a-zA-Z0-9_]+)\s+struct\b").unwrap();
     let iface_re = Regex::new(r"^\s*type\s+([a-zA-Z0-9_]+)\s+interface\b").unwrap();
+    let import_single_re = Regex::new(r#"^\s*import\s+(?:[a-zA-Z0-9_]+\s+)?"([^"]+)""#).unwrap();
+    let import_start_re = Regex::new(r#"^\s*import\s*\("#).unwrap();
+    let import_item_re = Regex::new(r#"^\s*(?:[a-zA-Z0-9_]+\s+)?"([^"]+)""#).unwrap();
+
+    let file_id = format!("{}::file", rel_path);
+    let mut file_entity = CodeEntity::new(&file_id, rel_path, EntityType::Module, rel_path, 1, 1);
+    file_entity.signature = Some(format!("file {}", rel_path));
+    graph.add_entity(file_entity);
+
+    let mut in_import_block = false;
+    let mut method_links = Vec::new();
 
     for (idx, line) in content.lines().enumerate() {
         let line_num = idx + 1;
@@ -17,7 +28,34 @@ pub fn parse_go(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             continue;
         }
 
-        if let Some(caps) = pkg_re.captures(trimmed) {
+        if in_import_block {
+            if trimmed.starts_with(')') {
+                in_import_block = false;
+            } else if let Some(caps) = import_item_re.captures(trimmed) {
+                let pkg_target = caps.get(1).unwrap().as_str();
+                let target_id = format!("go::{}", pkg_target);
+                if graph.get_entity(&target_id).is_none() {
+                    let mut ext = CodeEntity::new(&target_id, pkg_target, EntityType::Module, "<external>", line_num, line_num);
+                    ext.signature = Some(format!("import \"{}\"", pkg_target));
+                    graph.add_entity(ext);
+                }
+                graph.add_edge(&file_id, &target_id, EdgeKind::Imports);
+            }
+            continue;
+        }
+
+        if let Some(caps) = import_single_re.captures(trimmed) {
+            let pkg_target = caps.get(1).unwrap().as_str();
+            let target_id = format!("go::{}", pkg_target);
+            if graph.get_entity(&target_id).is_none() {
+                let mut ext = CodeEntity::new(&target_id, pkg_target, EntityType::Module, "<external>", line_num, line_num);
+                ext.signature = Some(format!("import \"{}\"", pkg_target));
+                graph.add_entity(ext);
+            }
+            graph.add_edge(&file_id, &target_id, EdgeKind::Imports);
+        } else if import_start_re.is_match(trimmed) {
+            in_import_block = true;
+        } else if let Some(caps) = pkg_re.captures(trimmed) {
             let name = caps.get(1).unwrap().as_str();
             let id = format!("{}::pkg::{}", rel_path, name);
             let mut entity = CodeEntity::new(&id, name, EntityType::Module, rel_path, line_num, line_num);
@@ -31,6 +69,8 @@ pub fn parse_go(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             let mut entity = CodeEntity::new(&id, full_name, EntityType::Method, rel_path, line_num, line_num);
             entity.signature = Some(trimmed.to_string());
             graph.add_entity(entity);
+            let struct_id = format!("{}::{}", rel_path, recv);
+            method_links.push((struct_id, id));
         } else if let Some(caps) = func_re.captures(trimmed) {
             let name = caps.get(1).unwrap().as_str();
             let id = format!("{}::{}", rel_path, name);
@@ -51,9 +91,15 @@ pub fn parse_go(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             graph.add_entity(entity);
         }
     }
+
+    for (struct_id, method_id) in method_links {
+        if graph.get_entity(&struct_id).is_some() {
+            graph.add_edge(&struct_id, &method_id, EdgeKind::Contains);
+        }
+    }
 }
 
-/// Parse C source and header files into structs, unions, enums, macros, and functions.
+/// Parse C source and header files into structs, unions, enums, macros, functions, and includes.
 pub fn parse_c(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let struct_re = Regex::new(r"^\s*(?:typedef\s+)?struct\s+([a-zA-Z0-9_]+)\s*\{").unwrap();
     let typedef_end_re = Regex::new(r"^\s*\}\s*([a-zA-Z0-9_]+)\s*;").unwrap();
@@ -61,6 +107,12 @@ pub fn parse_c(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let enum_re = Regex::new(r"^\s*(?:typedef\s+)?enum\s+([a-zA-Z0-9_]+)\s*\{").unwrap();
     let macro_re = Regex::new(r"^\s*#define\s+([a-zA-Z0-9_]+)\b").unwrap();
     let func_re = Regex::new(r"^\s*(?:static\s+|inline\s+|extern\s+)*[a-zA-Z0-9_]+(?:\s*\*+)?\s+([a-zA-Z0-9_]+)\s*\([^;)]*\)\s*\{").unwrap();
+    let include_re = Regex::new(r#"^\s*#include\s+[<"]([^>"]+)[>"]"#).unwrap();
+
+    let file_id = format!("{}::file", rel_path);
+    let mut file_entity = CodeEntity::new(&file_id, rel_path, EntityType::Module, rel_path, 1, 1);
+    file_entity.signature = Some(format!("file {}", rel_path));
+    graph.add_entity(file_entity);
 
     for (idx, line) in content.lines().enumerate() {
         let line_num = idx + 1;
@@ -69,7 +121,16 @@ pub fn parse_c(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             continue;
         }
 
-        if let Some(caps) = struct_re.captures(trimmed) {
+        if let Some(caps) = include_re.captures(trimmed) {
+            let header = caps.get(1).unwrap().as_str();
+            let target_id = format!("c::{}", header);
+            if graph.get_entity(&target_id).is_none() {
+                let mut ext = CodeEntity::new(&target_id, header, EntityType::Module, "<external>", line_num, line_num);
+                ext.signature = Some(format!("#include <{}>", header));
+                graph.add_entity(ext);
+            }
+            graph.add_edge(&file_id, &target_id, EdgeKind::Imports);
+        } else if let Some(caps) = struct_re.captures(trimmed) {
             let name = caps.get(1).unwrap().as_str();
             let id = format!("{}::struct::{}", rel_path, name);
             let mut entity = CodeEntity::new(&id, name, EntityType::Struct, rel_path, line_num, line_num);
@@ -111,13 +172,21 @@ pub fn parse_c(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     }
 }
 
-/// Parse C++ source and header files into classes, structs, namespaces, methods, and functions.
+/// Parse C++ source and header files into classes, structs, namespaces, methods, functions, and includes.
 pub fn parse_cpp(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let ns_re = Regex::new(r"^\s*namespace\s+([a-zA-Z0-9_:]+)\s*\{").unwrap();
     let class_re = Regex::new(r"^\s*(?:template\s*<[^>]*>\s*)?class\s+([a-zA-Z0-9_]+)(?:\s+final)?(?:\s*:\s*[^\{]+)?\s*\{").unwrap();
     let struct_re = Regex::new(r"^\s*(?:template\s*<[^>]*>\s*)?struct\s+([a-zA-Z0-9_]+)(?:\s+final)?(?:\s*:\s*[^\{]+)?\s*\{").unwrap();
     let method_re = Regex::new(r"^\s*(?:[a-zA-Z0-9_<>:*&]+\s+)?([a-zA-Z0-9_]+)::([a-zA-Z0-9_~]+)\s*\([^;)]*\)\s*(?:const)?\s*(?:noexcept)?\s*\{").unwrap();
     let func_re = Regex::new(r"^\s*(?:template\s*<[^>]*>\s*)?(?:inline\s+|static\s+|constexpr\s+|virtual\s+)*[a-zA-Z0-9_<>:*&]+\s+([a-zA-Z0-9_]+)\s*\([^;)]*\)\s*\{").unwrap();
+    let include_re = Regex::new(r#"^\s*#include\s+[<"]([^>"]+)[>"]"#).unwrap();
+
+    let file_id = format!("{}::file", rel_path);
+    let mut file_entity = CodeEntity::new(&file_id, rel_path, EntityType::Module, rel_path, 1, 1);
+    file_entity.signature = Some(format!("file {}", rel_path));
+    graph.add_entity(file_entity);
+
+    let mut method_links = Vec::new();
 
     for (idx, line) in content.lines().enumerate() {
         let line_num = idx + 1;
@@ -126,7 +195,16 @@ pub fn parse_cpp(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             continue;
         }
 
-        if let Some(caps) = ns_re.captures(trimmed) {
+        if let Some(caps) = include_re.captures(trimmed) {
+            let header = caps.get(1).unwrap().as_str();
+            let target_id = format!("cpp::{}", header);
+            if graph.get_entity(&target_id).is_none() {
+                let mut ext = CodeEntity::new(&target_id, header, EntityType::Module, "<external>", line_num, line_num);
+                ext.signature = Some(format!("#include <{}>", header));
+                graph.add_entity(ext);
+            }
+            graph.add_edge(&file_id, &target_id, EdgeKind::Imports);
+        } else if let Some(caps) = ns_re.captures(trimmed) {
             let name = caps.get(1).unwrap().as_str();
             let id = format!("{}::ns::{}", rel_path, name);
             let mut entity = CodeEntity::new(&id, name, EntityType::Module, rel_path, line_num, line_num);
@@ -152,6 +230,8 @@ pub fn parse_cpp(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             let mut entity = CodeEntity::new(&id, full_name, EntityType::Method, rel_path, line_num, line_num);
             entity.signature = Some(trimmed.to_string());
             graph.add_entity(entity);
+            let class_id = format!("{}::{}", rel_path, class_name);
+            method_links.push((class_id, id));
         } else if let Some(caps) = func_re.captures(trimmed) {
             let name = caps.get(1).unwrap().as_str();
             if !matches!(name, "if" | "while" | "for" | "switch" | "catch" | "return") {
@@ -160,6 +240,12 @@ pub fn parse_cpp(rel_path: &str, content: &str, graph: &mut CodeGraph) {
                 entity.signature = Some(trimmed.to_string());
                 graph.add_entity(entity);
             }
+        }
+    }
+
+    for (class_id, method_id) in method_links {
+        if graph.get_entity(&class_id).is_some() {
+            graph.add_edge(&class_id, &method_id, EdgeKind::Contains);
         }
     }
 }
@@ -173,6 +259,11 @@ pub fn parse_rust(rel_path: &str, content: &str, graph: &mut CodeGraph) {
     let fn_re = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern(?:\s+#[^#]+#)?\s+)?fn\s+([a-zA-Z0-9_]+)").unwrap();
     let impl_re = Regex::new(r"^\s*impl(?:\s*<[^>]+>)?\s+(?:([a-zA-Z0-9_:]+)\s+for\s+)?([a-zA-Z0-9_:]+)").unwrap();
     let use_re = Regex::new(r"^\s*(?:pub\s+)?use\s+([a-zA-Z0-9_:]+)").unwrap();
+
+    let file_id = format!("{}::file", rel_path);
+    let mut file_entity = CodeEntity::new(&file_id, rel_path, EntityType::Module, rel_path, 1, 1);
+    file_entity.signature = Some(format!("file {}", rel_path));
+    graph.add_entity(file_entity);
 
     let mut current_impl: Option<String> = None;
     let mut brace_depth = 0;
@@ -193,7 +284,36 @@ pub fn parse_rust(rel_path: &str, content: &str, graph: &mut CodeGraph) {
             if let Some(trait_match) = caps.get(1) {
                 let trait_name = trait_match.as_str();
                 let struct_id = format!("{}::{}", rel_path, target);
-                let trait_id = format!("{}::{}", rel_path, trait_name);
+                let local_trait_id = format!("{}::{}", rel_path, trait_name);
+                let trait_id = if graph.get_entity(&local_trait_id).is_some() {
+                    local_trait_id
+                } else {
+                    let clean_trait = trait_name.split("::").last().unwrap_or(trait_name);
+                    let found = graph
+                        .all_entities()
+                        .iter()
+                        .find(|e| e.name == clean_trait && e.entity_type == EntityType::Interface)
+                        .map(|e| e.id.clone());
+                    match found {
+                        Some(tid) => tid,
+                        None => {
+                            let global_trait_id = format!("rust::trait::{}", trait_name);
+                            if graph.get_entity(&global_trait_id).is_none() {
+                                let mut trait_ent = CodeEntity::new(
+                                    &global_trait_id,
+                                    clean_trait,
+                                    EntityType::Interface,
+                                    "<trait>",
+                                    line_num,
+                                    line_num,
+                                );
+                                trait_ent.signature = Some(format!("trait {}", trait_name));
+                                graph.add_entity(trait_ent);
+                            }
+                            global_trait_id
+                        }
+                    }
+                };
                 graph.add_edge(&struct_id, &trait_id, EdgeKind::Implements);
             }
         }
@@ -244,7 +364,14 @@ pub fn parse_rust(rel_path: &str, content: &str, graph: &mut CodeGraph) {
         } else if let Some(caps) = use_re.captures(trimmed) {
             let target = caps.get(1).unwrap().as_str();
             let src_id = format!("{}::file", rel_path);
-            graph.add_edge(&src_id, target, EdgeKind::Imports);
+            let target_id = format!("rust::{}", target);
+            if graph.get_entity(&target_id).is_none() {
+                let clean_name = target.split("::").last().unwrap_or(target);
+                let mut ext = CodeEntity::new(&target_id, clean_name, EntityType::Module, "<external>", line_num, line_num);
+                ext.signature = Some(format!("use {}", target));
+                graph.add_entity(ext);
+            }
+            graph.add_edge(&src_id, &target_id, EdgeKind::Imports);
         }
 
         let open = line.chars().filter(|&c| c == '{').count();

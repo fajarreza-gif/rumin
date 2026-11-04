@@ -3,12 +3,18 @@ pub mod scripting;
 pub mod jvm_xml;
 pub mod salesforce;
 pub mod telecom;
+pub mod vb;
+pub mod json_manifests;
+pub mod yaml_manifests;
 
 pub use systems::*;
 pub use scripting::*;
 pub use jvm_xml::*;
 pub use salesforce::*;
 pub use telecom::*;
+pub use vb::*;
+pub use json_manifests::*;
+pub use yaml_manifests::*;
 
 use std::fs::File;
 use std::io::Read;
@@ -66,12 +72,24 @@ pub fn parse_generic_source(rel_path: &str, content: &str, lang: &str, graph: &m
             parse_html(rel_path, content, graph);
             return;
         }
-        "plsql" | "oracle" => {
+        "sql" | "plsql" | "oracle" => {
             parse_plsql(rel_path, content, graph);
             return;
         }
-        "apex" | "cls" => {
+        "apex" => {
             parse_apex_class(rel_path, content, graph);
+            return;
+        }
+        "cls" => {
+            if is_vb_cls(content) {
+                parse_vb(rel_path, content, graph);
+            } else {
+                parse_apex_class(rel_path, content, graph);
+            }
+            return;
+        }
+        "vb" | "vba" | "bas" | "frm" | "ctl" | "vbs" | "visualbasic" => {
+            parse_vb(rel_path, content, graph);
             return;
         }
         "trigger" => {
@@ -92,6 +110,14 @@ pub fn parse_generic_source(rel_path: &str, content: &str, lang: &str, graph: &m
         }
         "apigee" => {
             parse_apigee(rel_path, content, graph);
+            return;
+        }
+        "json" | "jsonc" => {
+            parse_json_manifest(rel_path, content, graph);
+            return;
+        }
+        "yaml" | "yml" => {
+            parse_yaml_manifest(rel_path, content, graph);
             return;
         }
         _ => {}

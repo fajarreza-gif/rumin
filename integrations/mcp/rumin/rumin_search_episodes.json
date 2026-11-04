@@ -1,0 +1,1 @@
+{"name":"rumin_search_episodes","description":"Search episodic memories, past debugging trials, and bug-fix solutions.","parameters":{"properties":{"limit":{"description":"Maximum number of episodes to return","type":"integer"},"query":{"description":"Search keyword or error description","type":"string"}},"required":["query"],"type":"object"}}

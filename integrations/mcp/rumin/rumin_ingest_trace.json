@@ -1,0 +1,1 @@
+{"name":"rumin_ingest_trace","description":"Ingest tool execution traces (JSONL) and register action frequencies in memory.","parameters":{"properties":{"session_id":{"description":"Optional session ID to associate","type":"string"},"trace_path":{"description":"Path to JSONL execution trace file","type":"string"}},"required":["trace_path"],"type":"object"}}

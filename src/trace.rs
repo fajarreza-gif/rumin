@@ -75,17 +75,18 @@ impl TraceIngestor {
 
                 (action, target)
             } else {
-                ("generic".to_string(), line_str[..line_str.len().min(80)].to_string())
+                let truncated = line_str.chars().take(80).collect::<String>();
+                ("generic".to_string(), truncated)
             };
 
             let id = format!("tr_{}", &Uuid::new_v4().to_string()[..8]);
-            let _ = conn.execute(
+            if conn.execute(
                 "INSERT INTO traces (id, session_id, step_index, action, target, timestamp)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![id, session_id, idx as i64, action, target, now],
-            );
-
-            steps_ingested += 1;
+            ).is_ok() {
+                steps_ingested += 1;
+            }
         }
 
         let _ = conn.execute_batch("COMMIT;");

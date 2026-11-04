@@ -1,0 +1,1 @@
+{"name":"rumin_audit_limits","description":"Audit runtime governor limits and concurrency hazards in Apex/database code (SOQL inside loops, DML in loops, callouts in loops, unbounded queries on high-cardinality tables).","parameters":{"properties":{},"type":"object"}}

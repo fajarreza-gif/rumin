@@ -1,0 +1,1 @@
+{"name":"rumin_index","description":"Trigger a full parallel re-indexing of the repository.","parameters":{"properties":{},"type":"object"}}

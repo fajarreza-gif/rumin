@@ -6,7 +6,44 @@ Since the binary `ai-rumin` is already installed in your system executable PATH 
 
 ---
 
-## 🚀 Quick Setup (Generic Configuration)
+## ⚡ 1-Command Automated Installation (Recommended for All Users)
+
+Rumin comes with a self-contained, automated installer script [`install.sh`](./install.sh) that sets up the complete Rumin ecosystem in seconds:
+
+```bash
+# Run interactive installer:
+./install.sh
+
+# Or non-interactive auto-install:
+./install.sh --yes
+
+# Or via Makefile:
+make install
+```
+
+### What `install.sh` Does Automatically:
+1. **Binary Installation**: Installs `ai-rumin` to `~/.local/bin` (or `/usr/local/bin` for root), symlinks `rumin`, and ensures it is in your `PATH`.
+2. **MCP Server Registration**: Registers `ai-rumin serve` into `~/.gemini/config/mcp_config.json`.
+3. **MCP Tool Schemas**: Installs all 25 JSON tool schemas and operational instructions to `~/.gemini/antigravity-cli/mcp/rumin/`.
+4. **Global Agent Guidelines**: Installs the mandatory Rumin-First code navigation protocol into `~/.gemini/config/GEMINI.md` and `AGENTS.md`.
+5. **Token Circuit Breaker Hook**: Configures `PreToolUse` hook in `~/.gemini/config/hooks.json` to prevent token-wasting whole-file reads and shell dumps.
+6. **Self-Testing**: Runs an automated stdio JSON-RPC 2.0 handshake verification.
+
+### Installer Options & Flags:
+```bash
+./install.sh --help
+  -p, --prefix <DIR>       Install binary to <DIR>/bin (default: ~/.local or /usr/local)
+  -b, --bin-dir <DIR>      Install binary directly into <DIR>
+  -y, --yes                Accept defaults automatically (non-interactive)
+      --claude             Also configure Claude Desktop MCP configuration
+      --cursor             Also configure Cursor IDE MCP configuration
+      --all                Configure all supported clients (Antigravity, Claude, Cursor)
+      --dry-run            Simulate operations without writing changes
+```
+
+---
+
+## 🚀 Manual Setup (Generic Configuration)
 
 To enable `ai-rumin` for a target codebase, add it to your client's `mcpServers` configuration block:
 

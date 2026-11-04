@@ -415,6 +415,64 @@ fn test_salesforce_metadata_parser() {
 }
 
 #[test]
+fn test_all_salesforce_meta_xml_variations_digestion() {
+    // 1. is_supported_file checks on any *-meta.xml variation
+    assert!(Indexer::is_supported_file("OrderSync.flow-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("Admin.profile-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("Order_Admin.permissionset-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("Account-Account_Layout.layout-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("CustomLabels.labels-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("Account.workflow-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("MyService.cls-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("Quote.sharingRules-meta.xml", "xml"));
+    assert!(Indexer::is_supported_file("es_MX.translation-meta.xml", "xml"));
+
+    let mut graph = CodeGraph::new();
+
+    // 2. Flow metadata with SObject reference
+    let flow_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Syncs order to ERP backend</description>
+    <label>Order Sync Flow</label>
+    <processType>AutoLaunchedFlow</processType>
+    <status>Active</status>
+    <object>Order</object>
+</Flow>"#;
+    Indexer::parse_salesforce_metadata("force-app/main/default/flows/OrderSync.flow-meta.xml", flow_content, &mut graph);
+
+    let flow_ent = graph.get_entity("salesforce::flow::OrderSync").expect("Flow entity should be indexed");
+    assert_eq!(flow_ent.name, "Order Sync Flow");
+    assert_eq!(flow_ent.entity_type, EntityType::Rule);
+    assert_eq!(flow_ent.docstring.as_deref(), Some("Syncs order to ERP backend"));
+    assert!(graph.get_entity("sobject::Order").is_some(), "Referenced sobject::Order must be in graph");
+    assert!(graph.has_edge("salesforce::flow::OrderSync", "sobject::Order"), "Flow must reference sobject::Order");
+
+    // 3. PermissionSet metadata
+    let permset_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Grants order access</description>
+    <label>Order Manager</label>
+</PermissionSet>"#;
+    Indexer::parse_salesforce_metadata("force-app/main/default/permissionsets/Order_Manager.permissionset-meta.xml", permset_content, &mut graph);
+    let perm_ent = graph.get_entity("salesforce::permissionset::Order_Manager").expect("PermissionSet entity");
+    assert_eq!(perm_ent.entity_type, EntityType::Rule);
+
+    // 4. CustomLabels metadata
+    let labels_content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata">
+    <labels>
+        <fullName>Order_Confirmation_Message</fullName>
+        <value>Your order has been placed</value>
+    </labels>
+</CustomLabels>"#;
+    Indexer::parse_salesforce_metadata("force-app/main/default/labels/CustomLabels.labels-meta.xml", labels_content, &mut graph);
+    assert!(graph.get_entity("salesforce::labels::CustomLabels").is_some());
+    let label_item = graph.get_entity("label::Order_Confirmation_Message").expect("Label item entity");
+    assert_eq!(label_item.entity_type, EntityType::Variable);
+    assert!(graph.has_edge("salesforce::labels::CustomLabels", "label::Order_Confirmation_Message"));
+}
+
+#[test]
 fn test_soql_and_aura_parser() {
     let mut graph = CodeGraph::new();
     let soql_content = "SELECT Id, Name FROM Lead WHERE IsConverted = false";
@@ -702,6 +760,7 @@ async fn test_end_to_end_fixtures_indexing() {
         max_symbols: 10,
         include_signatures: true,
         expand_bodies: false,
+        ..Default::default()
     };
 
     let recall = hippocampal.query(&graph, "billing invoice audit tax", &budget);
