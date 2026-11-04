@@ -287,3 +287,68 @@ async fn test_end_to_end_indexer_with_omnistudio_json() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn test_empirical_salesforce_source_code_from_sf_b2b() {
+    let sf_root = std::path::Path::new("/home/wally/dev/SF-B2B");
+    if !sf_root.exists() {
+        return; // Skip if run in environments without local SF-B2B repo
+    }
+
+    let mut graph = CodeGraph::new();
+
+    // 1. Real OmniIntegrationProcedure XML from SF-B2B
+    let oip_rel = "force-app/main/default/omniIntegrationProcedures/ActivateFrameAgreement_Order_Procedure_1.oip-meta.xml";
+    let oip_path = sf_root.join(oip_rel);
+    if oip_path.exists() {
+        let content = std::fs::read_to_string(&oip_path).unwrap();
+        parse_omnistudio_metadata(oip_rel, &content, &mut graph);
+
+        assert!(graph.get_entity("omni_ip::Activate Frame Agreement").is_some());
+        let step_id = "omni_ip::Activate Frame Agreement::element::ActivateSourceDiscounts";
+        assert!(graph.get_entity(step_id).is_some());
+        assert!(graph.has_edge(step_id, "apex::ActivateFrameContract"));
+        assert!(graph.has_edge(step_id, "apex::ActivateFrameContract.activateSourceDiscounts"));
+    }
+
+    // 2. Real OmniDataTransform XML with Formulas from SF-B2B
+    let rpt_rel = "force-app/main/default/omniDataTransforms/CPQDMServicabilityCheckFTTHGetProductsInput_1.rpt-meta.xml";
+    let rpt_path = sf_root.join(rpt_rel);
+    if rpt_path.exists() {
+        let content = std::fs::read_to_string(&rpt_path).unwrap();
+        parse_omnistudio_metadata(rpt_rel, &content, &mut graph);
+
+        let dr_id = "omni_dr::CPQDMServicabilityCheckFTTHGetProductsInput";
+        assert!(graph.get_entity(dr_id).is_some());
+
+        // Node-level formula lineage
+        let formula_id = format!("{}::formula::QuoteLineItem:fullAddress", dr_id);
+        let formula_ent = graph.get_entity(&formula_id).expect("Formula entity must exist");
+        assert_eq!(formula_ent.entity_type, EntityType::Function);
+        assert!(formula_ent.signature.as_ref().unwrap().contains("IF("));
+
+        // Field lineage edge
+        assert!(graph.has_edge("sobject::QuoteLineItem.vlocity_cmt__QuoteMemberId__r", &formula_id)
+            || graph.has_edge("sobject::QuoteLineItem", &formula_id));
+    }
+
+    // 3. Real Apex Class from SF-B2B
+    let cls_rel = "force-app/main/default/classes/AccountStatusActivationServiceTest.cls";
+    let cls_path = sf_root.join(cls_rel);
+    if cls_path.exists() {
+        let content = std::fs::read_to_string(&cls_path).unwrap();
+        parse_apex_class(cls_rel, &content, &mut graph);
+
+        assert!(graph.get_entity("force-app/main/default/classes/AccountStatusActivationServiceTest.cls::AccountStatusActivationServiceTest").is_some());
+    }
+
+    // 4. Real Custom SObject metadata from SF-B2B
+    let obj_rel = "force-app/main/default/objects/Account/Account.object-meta.xml";
+    let obj_path = sf_root.join(obj_rel);
+    if obj_path.exists() {
+        let content = std::fs::read_to_string(&obj_path).unwrap();
+        parse_salesforce_metadata(obj_rel, &content, &mut graph);
+
+        assert!(graph.get_entity("sobject::Account").is_some());
+    }
+}

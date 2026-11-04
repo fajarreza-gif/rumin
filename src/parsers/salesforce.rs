@@ -638,6 +638,102 @@ pub fn parse_omnistudio_metadata(rel_path: &str, content: &str, graph: &mut Code
     let path = Path::new(rel_path);
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
+    // Special handler for OmniDataTransform / DataRaptor XML (*.rpt-meta.xml)
+    if file_name.ends_with(".rpt-meta.xml") || content.contains("<OmniDataTransform") {
+        let name_re = Regex::new(r"<name>([^<]+)</name>").unwrap();
+        let name = name_re.captures(content).map(|c| c.get(1).unwrap().as_str().to_string()).unwrap_or_else(|| {
+            file_name.split('.').next().unwrap_or(file_name).to_string()
+        });
+
+        let dr_id = format!("omni_dr::{}", name);
+        let mut dr_entity = CodeEntity::new(&dr_id, &name, EntityType::Module, rel_path, 1, 1);
+        dr_entity.signature = Some(format!("OmniDataTransform {}", name));
+        dr_entity.metadata.insert("kind".to_string(), "DataTransform".to_string());
+        graph.add_entity(dr_entity);
+
+        let bundle_id = format!("bundle::{}", name);
+        if graph.get_entity(&bundle_id).is_none() {
+            let mut b_ent = CodeEntity::new(&bundle_id, &name, EntityType::Module, rel_path, 1, 1);
+            b_ent.signature = Some(format!("DataRaptorBundle {}", name));
+            graph.add_entity(b_ent);
+        }
+        graph.add_edge(&dr_id, &bundle_id, EdgeKind::Contains);
+
+        let item_block_re = Regex::new(r"(?s)<omniDataTransformItem>(.*?)</omniDataTransformItem>").unwrap();
+        let output_obj_re = Regex::new(r"<outputObjectName>([^<]+)</outputObjectName>").unwrap();
+        let output_fld_re = Regex::new(r"<outputFieldName>([^<]+)</outputFieldName>").unwrap();
+        let formula_expr_re = Regex::new(r"(?s)<formulaExpression>(.*?)</formulaExpression>").unwrap();
+        let formula_res_re = Regex::new(r"<formulaResultPath>([^<]+)</formulaResultPath>").unwrap();
+        let field_token_re = Regex::new(r"([A-Za-z0-9_]+)[:\.]([A-Za-z0-9_]+)").unwrap();
+
+        for (item_idx, item_cap) in item_block_re.captures_iter(content).enumerate() {
+            let block = item_cap.get(1).unwrap().as_str();
+            let line_num = item_idx + 1;
+
+            if let Some(out_obj_cap) = output_obj_re.captures(block) {
+                let out_obj = out_obj_cap.get(1).unwrap().as_str();
+                if out_obj != "Formula" && out_obj != "json" {
+                    let sobj_id = format!("sobject::{}", out_obj);
+                    if graph.get_entity(&sobj_id).is_none() {
+                        let mut sobj_ent = CodeEntity::new(&sobj_id, out_obj, EntityType::Table, rel_path, line_num, line_num);
+                        sobj_ent.signature = Some(format!("CustomObject {}", out_obj));
+                        graph.add_entity(sobj_ent);
+                    }
+                    graph.add_edge(&dr_id, &sobj_id, EdgeKind::References);
+
+                    if let Some(out_fld_cap) = output_fld_re.captures(block) {
+                        let out_fld = out_fld_cap.get(1).unwrap().as_str();
+                        let fld_id = format!("sobject::{}.{}", out_obj, out_fld);
+                        if graph.get_entity(&fld_id).is_none() {
+                            let mut col_ent = CodeEntity::new(&fld_id, out_fld, EntityType::Column, rel_path, line_num, line_num);
+                            col_ent.signature = Some(format!("Field {}.{}", out_obj, out_fld));
+                            graph.add_entity(col_ent);
+                            graph.add_edge(&sobj_id, &fld_id, EdgeKind::Contains);
+                        }
+                        graph.add_edge(&dr_id, &fld_id, EdgeKind::References);
+                    }
+                }
+            }
+
+            // Formula Lineage in XML OmniDataTransform
+            if let (Some(f_expr_cap), Some(f_res_cap)) = (formula_expr_re.captures(block), formula_res_re.captures(block)) {
+                let f_expr = f_expr_cap.get(1).unwrap().as_str().trim();
+                let f_res = f_res_cap.get(1).unwrap().as_str().trim();
+
+                let formula_id = format!("{}::formula::{}", dr_id, f_res);
+                let mut formula_ent = CodeEntity::new(&formula_id, f_res, EntityType::Function, rel_path, line_num, line_num);
+                formula_ent.signature = Some(format!("Formula {} = {}", f_res, f_expr));
+                formula_ent.metadata.insert("formulaExpression".to_string(), f_expr.to_string());
+                formula_ent.metadata.insert("resultPath".to_string(), f_res.to_string());
+                graph.add_entity(formula_ent);
+                graph.add_edge(&dr_id, &formula_id, EdgeKind::Contains);
+
+                // Tokenize referenced fields in formula
+                for cap in field_token_re.captures_iter(f_expr) {
+                    let obj = cap.get(1).unwrap().as_str();
+                    let fld = cap.get(2).unwrap().as_str();
+                    if !obj.chars().all(|c| c.is_ascii_digit()) && !fld.chars().all(|c| c.is_ascii_digit()) {
+                        let sobj_id = format!("sobject::{}", obj);
+                        let fld_id = format!("sobject::{}.{}", obj, fld);
+                        if graph.get_entity(&sobj_id).is_none() {
+                            let mut s_ent = CodeEntity::new(&sobj_id, obj, EntityType::Table, rel_path, line_num, line_num);
+                            s_ent.signature = Some(format!("CustomObject {}", obj));
+                            graph.add_entity(s_ent);
+                        }
+                        if graph.get_entity(&fld_id).is_none() {
+                            let mut c_ent = CodeEntity::new(&fld_id, fld, EntityType::Column, rel_path, line_num, line_num);
+                            c_ent.signature = Some(format!("Field {}.{}", obj, fld));
+                            graph.add_entity(c_ent);
+                            graph.add_edge(&sobj_id, &fld_id, EdgeKind::Contains);
+                        }
+                        graph.add_edge(&fld_id, &formula_id, EdgeKind::References);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     let (entity_kind, prefix) = if file_name.ends_with(".oip-meta.xml") {
         ("OmniIntegrationProcedure", "omni_ip")
     } else if file_name.ends_with(".os-meta.xml") {
@@ -685,6 +781,7 @@ pub fn parse_omnistudio_metadata(rel_path: &str, content: &str, graph: &mut Code
         step_entity.metadata.insert("level".to_string(), el_level.to_string());
 
         let mut remote_class: Option<String> = None;
+        let mut remote_method: Option<String> = None;
         let mut bundle_name: Option<String> = None;
         let mut sub_key: Option<String> = None;
 
@@ -695,6 +792,7 @@ pub fn parse_omnistudio_metadata(rel_path: &str, content: &str, graph: &mut Code
             if let Some(rm_cap) = remote_method_re.captures(block) {
                 let m_name = rm_cap.get(1).unwrap().as_str();
                 step_entity.metadata.insert("remoteMethod".to_string(), m_name.to_string());
+                remote_method = Some(m_name.to_string());
             }
             remote_class = Some(cls_name.to_string());
         }
@@ -717,18 +815,28 @@ pub fn parse_omnistudio_metadata(rel_path: &str, content: &str, graph: &mut Code
         graph.add_entity(step_entity);
         graph.add_edge(&proc_id, &step_id, EdgeKind::Contains);
 
-        if let Some(cls_name) = remote_class {
-            let target_id = if let Some(cls_idx) = graph.find_node_by_name_or_id(&cls_name) {
+        if let Some(cls_name) = remote_class.as_ref() {
+            let target_id = if let Some(cls_idx) = graph.find_node_by_name_or_id(cls_name) {
                 graph.graph[cls_idx].id.clone()
             } else {
                 let apex_id = format!("apex::{}", cls_name);
                 if graph.get_entity(&apex_id).is_none() {
-                    let target_ent = CodeEntity::new(&apex_id, &cls_name, EntityType::Class, rel_path, 1, 1);
+                    let target_ent = CodeEntity::new(&apex_id, cls_name, EntityType::Class, rel_path, 1, 1);
                     graph.add_entity(target_ent);
                 }
                 apex_id
             };
             graph.add_edge(&step_id, &target_id, EdgeKind::Calls);
+        }
+
+        if let (Some(cls_name), Some(meth_name)) = (&remote_class, &remote_method) {
+            let meth_id = format!("apex::{}.{}", cls_name, meth_name);
+            if graph.get_entity(&meth_id).is_none() {
+                let mut m_ent = CodeEntity::new(&meth_id, meth_name, EntityType::Method, rel_path, 1, 1);
+                m_ent.signature = Some(format!("ApexMethod {}.{}", cls_name, meth_name));
+                graph.add_entity(m_ent);
+            }
+            graph.add_edge(&step_id, &meth_id, EdgeKind::Calls);
         }
 
         if let Some(dr_name) = bundle_name {

@@ -336,7 +336,7 @@ impl Indexer {
         } else if matches!(extension, "trigger") {
             Self::parse_apex_trigger(&rel_path, &content, graph);
             Ok(true)
-        } else if file_name.ends_with(".oip-meta.xml") || file_name.ends_with(".os-meta.xml") || file_name.ends_with(".ouc-meta.xml") {
+        } else if file_name.ends_with(".oip-meta.xml") || file_name.ends_with(".os-meta.xml") || file_name.ends_with(".ouc-meta.xml") || file_name.ends_with(".rpt-meta.xml") {
             parsers::parse_omnistudio_metadata(&rel_path, &content, graph);
             Ok(true)
         } else if file_name.ends_with(".approvalProcess-meta.xml") {
