@@ -1,0 +1,37 @@
+{
+  "OmniProcessType": "Integration Procedure",
+  "%vlocity_namespace%__Type__c": "Order",
+  "%vlocity_namespace%__SubType__c": "Cancel",
+  "OmniProcessKey": "Order_Cancel",
+  "Description": "Cancel customer broadband order and execute billing rollback",
+  "%vlocity_namespace%__Element__c": [
+    {
+      "Name": "ExtractOrderDetails",
+      "%vlocity_namespace%__Type__c": "DataRaptor Extract Action",
+      "%vlocity_namespace%__Level__c": "0",
+      "%vlocity_namespace%__Order__c": "1",
+      "PropertySetConfig": {
+        "bundleName": "DR_ExtractOrderAndAccount"
+      }
+    },
+    {
+      "Name": "InvokeOrderManagementService",
+      "%vlocity_namespace%__Type__c": "Remote Action",
+      "%vlocity_namespace%__Level__c": "0",
+      "%vlocity_namespace%__Order__c": "2",
+      "PropertySetConfig": {
+        "remoteClass": "OrderManagementService",
+        "remoteMethod": "cancelOrder"
+      }
+    },
+    {
+      "Name": "CallBillingRollbackSubIP",
+      "%vlocity_namespace%__Type__c": "Integration Procedure Action",
+      "%vlocity_namespace%__Level__c": "0",
+      "%vlocity_namespace%__Order__c": "3",
+      "PropertySetConfig": {
+        "integrationProcedureKey": "Billing_RollbackInvoice"
+      }
+    }
+  ]
+}

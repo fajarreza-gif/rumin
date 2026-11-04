@@ -743,6 +743,10 @@ async fn test_end_to_end_fixtures_indexing() {
     assert!(all_entities.iter().any(|e| e.name == "AccountService" || e.name == "AccountService.getActiveAccounts"));
     assert!(all_entities.iter().any(|e| e.name == "AccountTrigger" || e.name == "Account"));
     assert!(all_entities.iter().any(|e| e.name == "Rating__c" || e.name == "accountCard"));
+    assert!(all_entities.iter().any(|e| e.id == "omni_ip::Order_Cancel"));
+    assert!(all_entities.iter().any(|e| e.id == "omni_dr::DR_TransformCustomerTier"));
+    assert!(all_entities.iter().any(|e| e.id == "epc::Product::BROADBAND_FIBER_1G"));
+    assert!(all_entities.iter().any(|e| e.id == "epc::Attribute::ATTR_DOWNLOAD_SPEED"));
 
     // Verify Erlang OTP ecosystem entities
     assert!(all_entities.iter().any(|e| e.name == "cache_server" || e.name == "start_link/0" || e.name == "get/1"));

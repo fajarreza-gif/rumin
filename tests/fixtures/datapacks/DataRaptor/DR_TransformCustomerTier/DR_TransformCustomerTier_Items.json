@@ -1,0 +1,25 @@
+{
+  "Name": "DR_TransformCustomerTier",
+  "DataRaptorType": "Transform",
+  "Description": "Calculate customer tier and discount based on annual revenue",
+  "%vlocity_namespace%__DataRaptorMapItem__c": [
+    {
+      "Name": "ExtractAccountRevenue",
+      "%vlocity_namespace%__InputObjectName__c": "Account",
+      "%vlocity_namespace%__InputFieldName__c": "AnnualRevenue",
+      "%vlocity_namespace%__OutputObjectName__c": "json",
+      "%vlocity_namespace%__OutputFieldName__c": "RawRevenue"
+    },
+    {
+      "Name": "CalculateDiscountFormula",
+      "%vlocity_namespace%__FormulaExpression__c": "IF(Account:AnnualRevenue > 1000000, Account:AnnualRevenue * 0.15, Account:AnnualRevenue * 0.05)",
+      "%vlocity_namespace%__FormulaResultPath__c": "Account:CalculatedDiscount"
+    },
+    {
+      "Name": "LoadContractDiscount",
+      "%vlocity_namespace%__InputObjectName__c": "json",
+      "%vlocity_namespace%__OutputObjectName__c": "Contract",
+      "%vlocity_namespace%__OutputFieldName__c": "DiscountAmount__c"
+    }
+  ]
+}

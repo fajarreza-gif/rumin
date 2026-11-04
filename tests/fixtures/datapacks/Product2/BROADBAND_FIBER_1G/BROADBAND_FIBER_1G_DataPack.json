@@ -1,0 +1,33 @@
+{
+  "ProductCode": "BROADBAND_FIBER_1G",
+  "Name": "Broadband Fiber 1Gbps Plan",
+  "Description": "High speed gigabit residential fiber connectivity",
+  "pricingMatrix": "BroadbandPricingMatrix",
+  "%vlocity_namespace%__ProductChildItem__c": [
+    {
+      "ChildProductCode": "WIFI_6_ROUTER",
+      "Name": "Wi-Fi 6 Router Hardware"
+    },
+    {
+      "ChildProductCode": "STATIC_IP_ADDON",
+      "Name": "Static IP Address"
+    }
+  ],
+  "vlocity_cmt__JSONAttribute__c": [
+    {
+      "categorycode__c": "NETWORK_SPECS",
+      "attributeuniquecode__c": "ATTR_DOWNLOAD_SPEED",
+      "value__c": "1000 Mbps"
+    },
+    {
+      "categorycode__c": "NETWORK_SPECS",
+      "attributeuniquecode__c": "ATTR_UPLOAD_SPEED",
+      "value__c": "500 Mbps"
+    },
+    {
+      "categorycode__c": "BILLING_OPTIONS",
+      "attributeuniquecode__c": "ATTR_CONTRACT_TERM",
+      "value__c": "24 Months"
+    }
+  ]
+}
