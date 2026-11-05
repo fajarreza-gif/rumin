@@ -83,6 +83,7 @@ impl Indexer {
                 | "java" | "cls" | "trigger" | "object" | "field" | "soql"
                 | "erl" | "hrl" | "escript" | "cmp" | "evt" | "intf" | "app" | "page" | "component"
                 | "xml" | "xsd" | "pom" | "html" | "htm"
+                | "proxy" | "pipeline" | "bix" | "wsdl"
                 | "sql" | "pls" | "pks" | "pkb" | "prc" | "fnc" | "trg"
                 | "sh" | "bash" | "zsh" | "mk"
                 | "vb" | "vba" | "bas" | "frm" | "ctl" | "vbs"
@@ -370,8 +371,13 @@ impl Indexer {
                 Self::parse_erlang_app(&rel_path, &content, graph);
             }
             Ok(true)
+        } else if matches!(extension, "proxy" | "pipeline" | "bix" | "wsdl") {
+            parsers::parse_oracle_soa(&rel_path, &content, graph);
+            Ok(true)
         } else if matches!(extension, "xml" | "xsd" | "pom") {
-            if Self::is_apigee_file(path, &content) {
+            if parsers::is_oracle_soa_file(path, &content) {
+                parsers::parse_oracle_soa(&rel_path, &content, graph);
+            } else if Self::is_apigee_file(path, &content) {
                 Self::parse_apigee(&rel_path, &content, graph);
             } else {
                 Self::parse_xml(&rel_path, &content, graph);

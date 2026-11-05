@@ -7,6 +7,7 @@ pub mod vb;
 pub mod json_manifests;
 pub mod yaml_manifests;
 pub mod omnistudio_json;
+pub mod oracle_soa;
 
 pub use systems::*;
 pub use scripting::*;
@@ -17,6 +18,7 @@ pub use vb::*;
 pub use json_manifests::*;
 pub use yaml_manifests::*;
 pub use omnistudio_json::*;
+pub use oracle_soa::*;
 
 use std::fs::File;
 use std::io::Read;
@@ -112,6 +114,10 @@ pub fn parse_generic_source(rel_path: &str, content: &str, lang: &str, graph: &m
         }
         "apigee" => {
             parse_apigee(rel_path, content, graph);
+            return;
+        }
+        "proxy" | "pipeline" | "bix" | "wsdl" | "osb" => {
+            parse_oracle_soa(rel_path, content, graph);
             return;
         }
         "json" | "jsonc" => {
